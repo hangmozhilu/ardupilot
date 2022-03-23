@@ -419,7 +419,7 @@ void Copter::one_hz_loop()
         Log_Write_Data(DATA_AP_STATE, ap.value);
     }
 
-    arming.update();
+    arming.update();//更新解锁状态
 
     if (!motors->armed()) {
         // make it possible to change ahrs orientation at runtime during initial config
@@ -451,6 +451,7 @@ void Copter::one_hz_loop()
     // indicates that the sensor or subsystem is present but not
     // functioning correctly
     update_sensor_status_flags();
+    gcs().send_text(MAV_SEVERITY_INFO, "Current attitude:%.1fM",copter.flightmode->get_alt_above_ground()/100.0f);//向地面站发送高度数据，消息等级6级（0级最紧急）
 }
 
 // called at 50hz

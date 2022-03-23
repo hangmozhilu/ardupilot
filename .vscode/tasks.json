@@ -1,0 +1,45 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"type": "shell",
+			"label": "进入目录",
+			"command": "cd /cygdrive/e/git_code/ardupilot",
+			"args": []
+		},
+		{
+			"type": "shell",
+			"label": "清理工程",
+			"command": "./waf distclean",
+			"args": [],
+			"dependsOn": [
+				"进入目录"
+			],
+			"problemMatcher": []
+		},
+        {
+			"type": "shell",
+			"label": "配置编译目标为CUAVv5",
+			"command": "./waf configure --board CUAVv5",
+			"args": [],
+			"dependsOn": [
+				"进入目录"
+			],
+			"problemMatcher": []
+		},
+		{
+			"type": "shell",
+			"label": "编译多旋翼固件",
+			"command": "./waf copter",
+			"args": [],
+			"dependsOn": [
+				"进入目录"
+			],
+			"problemMatcher": [],
+			"group": {
+				"kind": "build",
+				"isDefault": true
+			}
+		}
+	]
+}
