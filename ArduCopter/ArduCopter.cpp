@@ -215,19 +215,19 @@ void Copter::loop()
 }
 
 
-// Main loop - 400hz
+// Main loop - 400hz  主循环- 400hz，每2.5ms调用一次
 void Copter::fast_loop()
 {
-    // update INS immediately to get current gyro data populated
+    // update INS immediately to get current gyro data populated 更新INS立即得到当前陀螺数据填充
     ins.update();
 
-    // run low level rate controllers that only require IMU data
+    // run low level rate controllers that only require IMU data 运行低水平速率控制器，只需要IMU数据
     attitude_control->rate_controller_run();
 
-    // send outputs to the motors library immediately
+    // send outputs to the motors library immediately 立即将输出发送到电机库
     motors_output();
 
-    // run EKF state estimator (expensive)
+    // run EKF state estimator (expensive) 运行EKF状态估计器(高水平)
     // --------------------
     read_AHRS();
 
@@ -235,24 +235,24 @@ void Copter::fast_loop()
     update_heli_control_dynamics();
 #endif //HELI_FRAME
 
-    // Inertial Nav
+    // Inertial Nav 惯性导航
     // --------------------
     read_inertia();
 
-    // check if ekf has reset target heading or position
+    // check if ekf has reset target heading or position 检查ekf是否重置目标航向或位置  
     check_ekf_reset();
 
-    // run the attitude controllers
-    update_flight_mode();
+    // run the attitude controllers 运行姿态控制器
+    update_flight_mode();//更新飞行模式
 
-    // update home from EKF if necessary
+    // update home from EKF if necessary 
     update_home_from_EKF();
 
-    // check if we've landed or crashed
+    // check if we've landed or crashed 检查我们是否着陆或坠毁了
     update_land_and_crash_detectors();
 
 #if MOUNT == ENABLED
-    // camera mount's fast update
+    // camera mount's fast update 相机云台的快速更新
     camera_mount.update_fast();
 #endif
 

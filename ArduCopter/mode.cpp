@@ -1,8 +1,8 @@
 #include "Copter.h"
 
 /*
- * High level calls to set and update flight modes logic for individual
- * flight modes is in control_acro.cpp, control_stabilize.cpp, etc
+ * High level calls to set and update flight modes logic for individual 为个人设置和更新飞行模式逻辑的高级调用  
+ * flight modes is in control_acro.cpp, control_stabilize.cpp, etc 飞行模式是control_acroz .cpp, control_stabilize.cpp等 
  */
 
 /*
@@ -155,6 +155,12 @@ Copter::Mode *Copter::mode_from_mode_num(const uint8_t mode)
             break;
 #endif
 
+//#if MODE_DRAWSTAR_ENABLED == ENABLED
+        case DRAWSTAR:
+            ret = &mode_follow;
+            break;
+//#endif
+
         default:
             break;
     }
@@ -163,10 +169,10 @@ Copter::Mode *Copter::mode_from_mode_num(const uint8_t mode)
 }
 
 
-// set_mode - change flight mode and perform any necessary initialisation
-// optional force parameter used to force the flight mode change (used only first time mode is set)
-// returns true if mode was successfully set
-// ACRO, STABILIZE, ALTHOLD, LAND, DRIFT and SPORT can always be set successfully but the return state of other flight modes should be checked and the caller should deal with failures appropriately
+// set_mode - change flight mode and perform any necessary initialisation Set_mode -改变飞行模式并执行任何必要的初始化 
+// optional force parameter used to force the flight mode change (used only first time mode is set) 用于强制飞行模式改变的可选强制参数(仅用于设置第一次模式)  
+// returns true if mode was successfully set 如果成功设置模式，则返回true
+// ACRO, STABILIZE, ALTHOLD, LAND, DRIFT and SPORT can always be set successfully but the return state of other flight modes should be checked and the caller should deal with failures appropriately  速率、自稳、定高、着陆、盘旋和运动总是可以成功设置，但需要检查其他飞行模式的返回状态，并对故障进行适当处理
 bool Copter::set_mode(control_mode_t mode, mode_reason_t reason)
 {
 
@@ -201,7 +207,7 @@ bool Copter::set_mode(control_mode_t mode, mode_reason_t reason)
         return false;
     }
 
-    // perform any cleanup required by previous flight mode
+    // perform any cleanup required by previous flight mode 执行任何先前飞行模式要求的清理 
     exit_mode(flightmode, new_flightmode);
 
     // update flight mode
@@ -239,11 +245,11 @@ bool Copter::set_mode(control_mode_t mode, mode_reason_t reason)
     return true;
 }
 
-// update_flight_mode - calls the appropriate attitude controllers based on flight mode
-// called at 100hz or more
+// update_flight_mode - calls the appropriate attitude controllers based on flight mode 根据飞行模式调用适当的姿态控制器
+// called at 100hz or more 以100hz或更高的频率调用
 void Copter::update_flight_mode()
 {
-    // Update EKF speed limit - used to limit speed when we are using optical flow
+    // Update EKF speed limit - used to limit speed when we are using optical flow 更新EKF速度限制-用于使用光流时限制速度
     ahrs.getEkfControlLimits(ekfGndSpdLimit, ekfNavVelGainScaler);
 
     target_rangefinder_alt_used = false;
@@ -251,7 +257,7 @@ void Copter::update_flight_mode()
     flightmode->run();
 }
 
-// exit_mode - high level call to organise cleanup as a flight mode is exited
+// exit_mode - high level call to organise cleanup as a flight mode is exited   //退出飞行模式
 void Copter::exit_mode(Copter::Mode *&old_flightmode,
                        Copter::Mode *&new_flightmode)
 {

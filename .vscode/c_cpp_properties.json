@@ -4,8 +4,9 @@
             "name": "Win32",
             "includePath": [
                 "${workspaceFolder}/**",
+                "E:\\git_code\\ardupilot\\ArduCopter",
                 "${workspaceFolder}/libraries",
-                "${workspaceFolder}/modules"
+                "${workspaceFolder}/modules/gbenchmark/include"
             ],
             "defines": [
                 "_DEBUG",
@@ -14,7 +15,7 @@
             ],
             "compilerPath": "C:\\cygwin64\\bin\\gcc.exe",
             "cStandard": "gnu17",
-            "cppStandard": "gnu++14",
+            "cppStandard": "gnu++17",
             "intelliSenseMode": "linux-gcc-x64"
         }
     ],
