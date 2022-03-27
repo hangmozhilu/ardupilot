@@ -57,10 +57,16 @@ void Copter::ModeDrawStar::run()
             path_num++;
             wp_nav->set_wp_destination(path[path_num], false);
         }
-    }
-    if (wp_nav->reached_wp_destination()) {
-        path_num++;
-        wp_nav->set_wp_destination(path[path_num], false);
+    } else if (path_num == 6 && wp_nav->reached_wp_destination()) {
+        gcs().send_text(MAV_SEVERITY_CRITICAL,
+                        "Draw star finished,now go into Land Mode");
+        copter.set_mode(LAND, MODE_REASON_MISSION_END);
+        
+        // if (copter.set_mode(LAND, MODE_REASON_MISSION_END)) {  //错误，切换模式以后，飞机进入其他模式了，不会再执行后面的代码
+        //     gcs().send_text(MAV_SEVERITY_CRITICAL, "Land Mode change successful!");
+        // } else {
+        //     gcs().send_text(MAV_SEVERITY_CRITICAL, "Land Mode change false!");
+        // }
     }
     pos_control_run();  //每400Hz调用一次
  }

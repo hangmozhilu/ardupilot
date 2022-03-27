@@ -157,7 +157,7 @@ Copter::Mode *Copter::mode_from_mode_num(const uint8_t mode)
 
 //#if MODE_DRAWSTAR_ENABLED == ENABLED
         case DRAWSTAR:
-            ret = &mode_follow;
+            ret = &mode_DrawStar;
             break;
 //#endif
 
