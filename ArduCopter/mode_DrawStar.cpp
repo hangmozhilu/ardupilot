@@ -22,7 +22,7 @@ void Copter::ModeDrawStar::generate_path()
 {
     //飞机机体坐标系，机头前方X+,机体右舷Y+,机体下方Z+
     //第0航点为圆心
-    float radius_cm=1000.0;//默认10m米
+    float radius_cm = g2.star_radius_cm;//默认10m米
     wp_nav->get_wp_stopping_point(path[0]); //取得停止点
     path[1] = path[0] + Vector3f(1.0f,0,0)*radius_cm;
 
@@ -61,7 +61,7 @@ void Copter::ModeDrawStar::run()
         gcs().send_text(MAV_SEVERITY_CRITICAL,
                         "Draw star finished,now go into Land Mode");
         copter.set_mode(LAND, MODE_REASON_MISSION_END);
-        
+
         // if (copter.set_mode(LAND, MODE_REASON_MISSION_END)) {  //错误，切换模式以后，飞机进入其他模式了，不会再执行后面的代码
         //     gcs().send_text(MAV_SEVERITY_CRITICAL, "Land Mode change successful!");
         // } else {
