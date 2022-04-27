@@ -14,6 +14,7 @@ def build(bld):
             'AC_Autorotation',
             'AC_WPNav',
             'AP_Camera',
+            'AP_Beacon',
             'AP_IRLock',
             'AP_InertialNav',
             'AP_Motors',

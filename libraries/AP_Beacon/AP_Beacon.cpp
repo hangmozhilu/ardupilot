@@ -13,6 +13,11 @@
    along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
+#include <stdio.h>
+#include <stdarg.h>
+#include <GCS_MAVLink/GCS.h> 
+#include <AP_HAL/AP_HAL.h>
+
 #include "AP_Beacon.h"
 #include "AP_Beacon_Backend.h"
 #include "AP_Beacon_Pozyx.h"
@@ -22,9 +27,11 @@
 
 #include <AP_Common/Location.h>
 
+#define debug_nooploop 0 //nooploop debug
+
 extern const AP_HAL::HAL &hal;
 
-// table of user settable parameters
+// table of user settable parameters 用户可设置参数表
 const AP_Param::GroupInfo AP_Beacon::var_info[] = {
 
     // @Param: _TYPE
@@ -85,7 +92,7 @@ AP_Beacon::AP_Beacon(AP_SerialManager &_serial_manager) :
     AP_Param::setup_object_defaults(this, var_info);
 }
 
-// initialise the AP_Beacon class
+// initialise the AP_Beacon class 初始化AP Beacon类
 void AP_Beacon::init(void)
 {
     if (_driver != nullptr) {
@@ -99,6 +106,7 @@ void AP_Beacon::init(void)
     } else if (_type == AP_BeaconType_Marvelmind) {
         _driver = new AP_Beacon_Marvelmind(*this, serial_manager);
     } else if (_type == AP_BeaconType_Nooploop) {
+        gcs().send_text(MAV_SEVERITY_INFO, "!!!!! new AP_Beacon_Nooploop !!!!!");  // debug,如果信标功能不正常就输出bed
         _driver = new AP_Beacon_Nooploop(*this, serial_manager);
     }
 #if CONFIG_HAL_BOARD == HAL_BOARD_SITL
@@ -108,18 +116,26 @@ void AP_Beacon::init(void)
 #endif
 }
 
-// return true if beacon feature is enabled
+// return true if beacon feature is enabled 如果信标功能被启用，则返回true
 bool AP_Beacon::enabled(void) const
 {
+#if debug_nooploop
+    gcs().send_text(MAV_SEVERITY_INFO, "!!!!! AP_Beacon IS ENABLE !!!!!");//debug,如果信标功能被启用就输出消息
+#endif
     return (_type != AP_BeaconType_None);
 }
 
-// return true if sensor is basically healthy (we are receiving data)
-bool AP_Beacon::healthy(void) const
-{
+// return true if sensor is basically healthy (we are receiving data) 如果传感器基本正常则返回true(我们正在接收数据)
+bool AP_Beacon::healthy(void) const {
     if (!device_ready()) {
+#if debug_nooploop
+        gcs().send_text(MAV_SEVERITY_INFO, "!!!!! AP_Beacon IS BAD !!!!!");  // debug,如果信标功能不正常就输出bed
+#endif
         return false;
     }
+#if debug_nooploop
+    gcs().send_text(MAV_SEVERITY_INFO, "!!!!! AP_Beacon IS OK !!!!!");  // debug,如果信标功能不正常就输出OK
+#endif
     return _driver->healthy();
 }
 
@@ -130,33 +146,48 @@ void AP_Beacon::update(void)
         return;
     }
     _driver->update();
+ 
+#if debug_nooploop
+    const auto *bcon = AP::beacon();
+ 
+    gcs().send_text(MAV_SEVERITY_INFO, "!!!!! AP_Beacon X: %f !!!!!", bcon->beacon_position(0)[0]);  // debug,如果信标功能正常就输出坐标
+    gcs().send_text(MAV_SEVERITY_INFO, "!!!!! AP_Beacon Y: %f !!!!!", bcon->beacon_position(0)[1]);  // debug,如果信标功能正常就输出坐标
+    gcs().send_text(MAV_SEVERITY_INFO, "!!!!! AP_Beacon Z: %f !!!!!", bcon->beacon_position(0)[2]);  // debug,如果信标功能正常就输出坐标
+#endif
 
-    // update boundary for fence
+    // update boundary for fence 更新围栏边界
     update_boundary_points();
 }
 
-// return origin of position estimate system
+// return origin of position estimate system 返回位置估计系统原点
 bool AP_Beacon::get_origin(Location &origin_loc) const
 {
     if (!device_ready()) {
         return false;
     }
 
-    // check for un-initialised origin
+    // check for un-initialised origin 检查无效的原点
     if (is_zero(origin_lat) && is_zero(origin_lon) && is_zero(origin_alt)) {
+        // gcs().send_text(MAV_SEVERITY_INFO, "!!is_zero(origin_lat) && is_zero(origin_lon) && is_zero(origin_alt!!");//debug,如果原点经纬度都为零，打印
         return false;
     }
 
-    // return origin
+    // return origin 返回原点
     origin_loc = {};
-    origin_loc.lat = origin_lat * 1.0e7f;
+    origin_loc.lat = origin_lat * 1.0e7f; //origin_lat 为参数列表中手动输入的原点数值
     origin_loc.lng = origin_lon * 1.0e7f;
-    origin_loc.alt = origin_alt * 100;
+    origin_loc.alt = origin_alt * 100;    //origin_alt单位为米，浮点型数据
+
+#if debug_nooploop
+    gcs().send_text(MAV_SEVERITY_INFO, "!!!!! origin lat:%ld !!!!!", origin_loc.lat);//debug,输出原点latitude 纬度
+    gcs().send_text(MAV_SEVERITY_INFO, "!!!!! origin lng:%ld !!!!!", origin_loc.lng);//debug,输出原点longitude 经度
+    gcs().send_text(MAV_SEVERITY_INFO, "!!!!! origin lat:%ld !!!!!", origin_loc.alt);//debug,输出原点alt 高度 
+#endif 
 
     return true;
 }
 
-// return position in NED from position estimate system's origin in meters
+// return position in NED from position estimate system's origin in meters 在NED中，从位置估计系统的原点返回的位置，单位是米
 bool AP_Beacon::get_vehicle_position_ned(Vector3f &position, float& accuracy_estimate) const
 {
     if (!device_ready()) {
@@ -168,13 +199,20 @@ bool AP_Beacon::get_vehicle_position_ned(Vector3f &position, float& accuracy_est
         return false;
     }
 
-    // return position
+    // return position 返回位置
     position = veh_pos_ned;
     accuracy_estimate = veh_pos_accuracy;
+
+#if debug_nooploop
+    gcs().send_text(MAV_SEVERITY_INFO, "!!!!! origin lat:%f !!!!!", veh_pos_ned[0]);//debug,输出原点latitude 纬度
+    gcs().send_text(MAV_SEVERITY_INFO, "!!!!! origin lat:%f !!!!!", veh_pos_ned[1]);//debug,输出原点latitude 纬度
+    gcs().send_text(MAV_SEVERITY_INFO, "!!!!! origin lat:%f !!!!!", veh_pos_ned[2]);//debug,输出原点latitude 纬度
+#endif 
+
     return true;
 }
 
-// return the number of beacons
+// return the number of beacons 返回信标的数量
 uint8_t AP_Beacon::count() const
 {
     if (!device_ready()) {

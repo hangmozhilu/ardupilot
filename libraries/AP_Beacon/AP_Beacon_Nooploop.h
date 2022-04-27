@@ -53,6 +53,6 @@ private:
     uint16_t _frame_len;                        // message supplied frame length
     uint8_t _crc_expected;                      // calculated crc which is compared against actual received crc
     uint32_t _last_update_ms;                   // last time we receive data from tag
-    bool _anchor_pos_avail;                     // flag indicates if we got anchor position or not
+    bool _anchor_pos_avail;                     // flag indicates if we got anchor position or not 标志指示我们是否获得了锚定位置
     uint32_t _last_request_setting_ms;          // last time we sent request_setting0 packet to tag
 };

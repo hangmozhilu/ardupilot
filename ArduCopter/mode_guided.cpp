@@ -7,14 +7,14 @@
  */
 
 #ifndef GUIDED_LOOK_AT_TARGET_MIN_DISTANCE_CM
- # define GUIDED_LOOK_AT_TARGET_MIN_DISTANCE_CM     500     // point nose at target if it is more than 5m away
+ # define GUIDED_LOOK_AT_TARGET_MIN_DISTANCE_CM     500     // point nose at target if it is more than 5m away 如果目标距离超过5米，用头对准目标
 #endif
 
-static Vector3p guided_pos_target_cm;       // position target (used by posvel controller only)
-bool guided_pos_terrain_alt;                // true if guided_pos_target_cm.z is an alt above terrain
-static Vector3f guided_vel_target_cms;      // velocity target (used by pos_vel_accel controller and vel_accel controller)
-static Vector3f guided_accel_target_cmss;   // acceleration target (used by pos_vel_accel controller vel_accel controller and accel controller)
-static uint32_t update_time_ms;             // system time of last target update to pos_vel_accel, vel_accel or accel controller
+static Vector3p guided_pos_target_cm;       // position target (used by posvel controller only) 位置目标(仅posvel控制器使用)
+bool guided_pos_terrain_alt;                // true if guided_pos_target_cm.z is an alt above terrain 如果引导pos目标cm为真。Z是地形上方的Alt
+static Vector3f guided_vel_target_cms;      // velocity target (used by pos_vel_accel controller and vel_accel controller) 速度目标(用于变速控制器和变速控制器)
+static Vector3f guided_accel_target_cmss;   // acceleration target (used by pos_vel_accel controller vel_accel controller and accel controller) 加速目标(由多个加速控制器和加速控制器使用)
+static uint32_t update_time_ms;             // system time of last target update to pos_vel_accel, vel_accel or accel controller 系统时间最后的目标更新到pos加速，vel加速或加速控制器
 
 struct {
     uint32_t update_time_ms;
