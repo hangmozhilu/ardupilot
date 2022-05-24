@@ -10,32 +10,32 @@ class Mode {
 
 public:
 
-    // Auto Pilot Modes enumeration
+    // Auto Pilot Modes enumeration 自动驾驶模式枚举，各模式对应的字符
     enum class Number : uint8_t {
-        STABILIZE =     0,  // manual airframe angle with manual throttle
-        ACRO =          1,  // manual body-frame angular rate with manual throttle
-        ALT_HOLD =      2,  // manual airframe angle with automatic throttle
-        AUTO =          3,  // fully automatic waypoint control using mission commands
-        GUIDED =        4,  // fully automatic fly to coordinate or fly at velocity/direction using GCS immediate commands
-        LOITER =        5,  // automatic horizontal acceleration with automatic throttle
-        RTL =           6,  // automatic return to launching point
-        CIRCLE =        7,  // automatic circular flight with automatic throttle
-        LAND =          9,  // automatic landing with horizontal position control
-        DRIFT =        11,  // semi-autonomous position, yaw and throttle control
-        SPORT =        13,  // manual earth-frame angular rate control with manual throttle
-        FLIP =         14,  // automatically flip the vehicle on the roll axis
-        AUTOTUNE =     15,  // automatically tune the vehicle's roll and pitch gains
-        POSHOLD =      16,  // automatic position hold with manual override, with automatic throttle
-        BRAKE =        17,  // full-brake using inertial/GPS system, no pilot input
-        THROW =        18,  // throw to launch mode using inertial/GPS system, no pilot input
-        AVOID_ADSB =   19,  // automatic avoidance of obstacles in the macro scale - e.g. full-sized aircraft
-        GUIDED_NOGPS = 20,  // guided mode but only accepts attitude and altitude
-        SMART_RTL =    21,  // SMART_RTL returns to home by retracing its steps
-        FLOWHOLD  =    22,  // FLOWHOLD holds position with optical flow without rangefinder
-        FOLLOW    =    23,  // follow attempts to follow another vehicle or ground station
-        ZIGZAG    =    24,  // ZIGZAG mode is able to fly in a zigzag manner with predefined point A and point B
-        SYSTEMID  =    25,  // System ID mode produces automated system identification signals in the controllers
-        AUTOROTATE =   26,  // Autonomous autorotation
+        STABILIZE =     0,  // manual airframe angle with manual throttle 手动机身角度、手动油门
+        ACRO =          1,  // manual body-frame angular rate with manual throttle 手动角速度、手动油门
+        ALT_HOLD =      2,  // manual airframe angle with automatic throttle 手动机身角度、自动油门
+        AUTO =          3,  // fully automatic waypoint control using mission commands 使用任务命令的全自动航路点控制
+        GUIDED =        4,  // fully automatic fly to coordinate or fly at velocity/direction using GCS immediate commands 全自动协调飞行或使用GCS即时命令控制速度/方向飞行
+        LOITER =        5,  // automatic horizontal acceleration with automatic throttle 带自动油门的自动水平加速
+        RTL =           6,  // automatic return to launching point 自动返回出发点
+        CIRCLE =        7,  // automatic circular flight with automatic throttle 自动油门自动循环飞行
+        LAND =          9,  // automatic landing with horizontal position control 带水平位置控制的自动着陆
+        DRIFT =        11,  // semi-autonomous position, yaw and throttle control 半自动位置、偏航和油门控制
+        SPORT =        13,  // manual earth-frame angular rate control with manual throttle 手动油门、手动地面框架角速度控制
+        FLIP =         14,  // automatically flip the vehicle on the roll axis 在侧倾轴上自动翻转载具
+        AUTOTUNE =     15,  // automatically tune the vehicle's roll and pitch gains 自动调整车辆的侧倾和俯仰增益
+        POSHOLD =      16,  // automatic position hold with manual override, with automatic throttle 手动干预、自动油门、自动位置保持
+        BRAKE =        17,  // full-brake using inertial/GPS system, no pilot input [刹车模式] 使用惯性/GPS系统的完全制动，无飞行员输入
+        THROW =        18,  // throw to launch mode using inertial/GPS system, no pilot input [手抛模式]使用惯性/GPS系统投至发射模式，无飞行员输入
+        AVOID_ADSB =   19,  // automatic avoidance of obstacles in the macro scale - e.g. full-sized aircraft 自动避开一定范围内的障碍物——例如全尺寸飞机
+        GUIDED_NOGPS = 20,  // guided mode but only accepts attitude and altitude [无GPS引导模式] 引导模式，但只接受姿态和高度
+        SMART_RTL =    21,  // SMART_RTL returns to home by retracing its steps [智能返航]通过回溯航迹原路返航
+        FLOWHOLD  =    22,  // FLOWHOLD holds position with optical flow without rangefinder FLOWHOLD保持位置与光流没有测距仪
+        FOLLOW    =    23,  // follow attempts to follow another vehicle or ground station 尝试跟踪其他车辆或地面站
+        ZIGZAG    =    24,  // ZIGZAG mode is able to fly in a zigzag manner with predefined point A and point B [AB点模式] ZIGZAG模式可以通过预定义的点a和点B以ZIGZAG方式飞行
+        SYSTEMID  =    25,  // System ID mode produces automated system identification signals in the controllers 系统ID模式在控制器中产生自动系统识别信号
+        AUTOROTATE =   26,  // Autonomous autorotation 自主自转
     };
 
     // constructor
@@ -48,7 +48,7 @@ public:
     // returns a unique number specific to this mode
     virtual Number mode_number() const = 0;
 
-    // child classes should override these methods
+    // child classes should override these methods 子类应该重写这些方法
     virtual bool init(bool ignore_checks) {
         return true;
     }

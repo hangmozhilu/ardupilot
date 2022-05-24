@@ -197,13 +197,13 @@ bool Copter::set_mode(Mode::Number mode, ModeReason reason)
         return true;
     }
 
-    Mode *new_flightmode = mode_from_mode_num((Mode::Number)mode);
-    if (new_flightmode == nullptr) {
+    Mode *new_flightmode = mode_from_mode_num((Mode::Number)mode);//将模式赋给一个临时变量
+    if (new_flightmode == nullptr) {  //如果这个模式在飞控中没有
         gcs().send_text(MAV_SEVERITY_WARNING,"No such mode");
         AP::logger().Write_Error(LogErrorSubsystem::FLIGHT_MODE, LogErrorCode(mode));
         return false;
     }
-
+    //安全判断***************
     bool ignore_checks = !motors->armed();   // allow switching to any mode if disarmed.  We rely on the arming check to perform
 
 #if FRAME_CONFIG == HELI_FRAME
@@ -274,7 +274,7 @@ bool Copter::set_mode(Mode::Number mode, ModeReason reason)
 
     // store previous flight mode (only used by tradeheli's autorotation)
     prev_control_mode = flightmode->mode_number();
-
+    //安全判断完成***************
     // update flight mode
     flightmode = new_flightmode;
     control_mode_reason = reason;
@@ -315,8 +315,8 @@ bool Copter::set_mode(const uint8_t new_mode, const ModeReason reason)
     return copter.set_mode(static_cast<Mode::Number>(new_mode), reason);
 }
 
-// update_flight_mode - calls the appropriate attitude controllers based on flight mode
-// called at 100hz or more
+// update_flight_mode - calls the appropriate attitude controllers based on flight mode更新飞行模式-根据飞行模式调用相应的姿态控制器
+// called at 100hz or more 以100hz或更高频率呼叫
 void Copter::update_flight_mode()
 {
     surface_tracking.invalidate_for_logging();  // invalidate surface tracking alt, flight mode will set to true if used

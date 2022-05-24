@@ -325,12 +325,12 @@ static_assert(ARRAY_SIZE(_font) == 475, "_font is correct size");
 
 bool Display::init(void)
 {
-    // exit immediately if already initialised
+    // exit immediately if already initialised 如果已经初始化，请立即退出
     if (_driver != nullptr) {
         return true;
     }
 
-    // initialise driver
+    // initialise driver 初始化驱动程序
     FOREACH_I2C(i) {
         switch (pNotify->_display_type) {
         case DISPLAY_SSD1306: {
@@ -362,7 +362,7 @@ bool Display::init(void)
         return false;
     }
 
-    // update all on display
+    // update all on display 更新所有显示
     update_all();
     _driver->hw_update();
 
@@ -371,7 +371,7 @@ bool Display::init(void)
 
 void Display::update()
 {
-    // max update frequency 2Hz
+    // max update frequency 2Hz 最大更新频率2Hz
     static uint8_t timer = 0;
     if (timer++ < 25) {
         return;
@@ -383,18 +383,18 @@ void Display::update()
             _driver->clear_screen();
             update_arm(3);
             _screenpage = 1;
-            _driver->hw_update(); //update hw once , do not transmition to display in fly
+            _driver->hw_update(); //update hw once , do not transmition to display in fly 更新hw一次，不在飞行中显示传输
         }
         return;
     }
 
     if (_screenpage != 2) {
-        _driver->clear_screen(); //once clear screen when page changed
+        _driver->clear_screen(); //once clear screen when page changed 当页面更改时，清除一次屏幕
         _screenpage = 2;
     }
 
     update_all();
-    _driver->hw_update(); //update at 2 Hz in disarmed mode
+    _driver->hw_update(); //update at 2 Hz in disarmed mode 在飞控锁定模式下以2 Hz的频率更新
 
 }
 

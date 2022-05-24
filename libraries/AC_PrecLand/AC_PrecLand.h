@@ -6,7 +6,7 @@
 #include "PosVelEKF.h"
 #include <AP_HAL/utility/RingBuffer.h>
 
-// declare backend classes
+// declare backend classes 声明后端类
 class AC_PrecLand_Backend;
 class AC_PrecLand_Companion;
 class AC_PrecLand_IRLock;
@@ -15,7 +15,7 @@ class AC_PrecLand_SITL;
 
 class AC_PrecLand
 {
-    // declare backends as friends
+    // declare backends as friends 将后端声明为友元
     friend class AC_PrecLand_Backend;
     friend class AC_PrecLand_Companion;
     friend class AC_PrecLand_IRLock;
@@ -29,8 +29,8 @@ public:
     AC_PrecLand(const AC_PrecLand &other) = delete;
     AC_PrecLand &operator=(const AC_PrecLand&) = delete;
 
-    // perform any required initialisation of landing controllers
-    // update_rate_hz should be the rate at which the update method will be called in hz
+    // perform any required initialisation of landing controllers 对着陆控制器进行任何必要的初始化
+    // update_rate_hz should be the rate at which the update method will be called in hz update_rate_hz应该是以hz为单位调用更新方法的速率
     void init(uint16_t update_rate_hz);
 
     // returns true if precision landing is healthy
@@ -54,22 +54,22 @@ public:
     // returns target position relative to the EKF origin
     bool get_target_position_cm(Vector2f& ret);
 
-    // returns target relative position as 3D vector
+    // returns target relative position as 3D vector 将目标相对位置作为三维向量返回
     void get_target_position_measurement_cm(Vector3f& ret);
 
-    // returns target position relative to vehicle
+    // returns target position relative to vehicle 返回相对于车辆的目标位置
     bool get_target_position_relative_cm(Vector2f& ret);
 
-    // returns target velocity relative to vehicle
+    // returns target velocity relative to vehicle 返回相对于车辆的目标速度
     bool get_target_velocity_relative_cms(Vector2f& ret);
 
-    // returns true when the landing target has been detected
+    // returns true when the landing target has been detected 检测到着陆目标时返回true
     bool target_acquired();
 
-    // process a LANDING_TARGET mavlink message
+    // process a LANDING_TARGET mavlink message 处理着陆mavlink消息
     void handle_msg(const mavlink_landing_target_t &packet, uint32_t timestamp_ms);
 
-    // parameter var table
+    // parameter var table mavlink
     static const struct AP_Param::GroupInfo var_info[];
 
 private:
@@ -78,7 +78,7 @@ private:
         KALMAN_FILTER = 1,
     };
 
-    // types of precision landing (used for PRECLAND_TYPE parameter)
+    // types of precision landing (used for PRECLAND_TYPE parameter) 精密着陆类型（用于预着陆类型参数）
     enum class Type : uint8_t {
         NONE = 0,
         COMPANION = 1,

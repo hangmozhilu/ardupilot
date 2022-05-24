@@ -46,7 +46,7 @@ void AC_PrecLand_Companion::handle_msg(const mavlink_landing_target_t &packet, u
 {
     _distance_to_target = packet.distance;
 
-    // compute unit vector towards target
+    // compute unit vector towards target 计算朝向目标的单位矢量 
     _los_meas_body = Vector3f(-tanf(packet.angle_y), tanf(packet.angle_x), 1.0f);
     _los_meas_body /= _los_meas_body.length();
 

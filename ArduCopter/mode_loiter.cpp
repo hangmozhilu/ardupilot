@@ -81,26 +81,26 @@ void ModeLoiter::run()
     float target_yaw_rate = 0.0f;
     float target_climb_rate = 0.0f;
 
-    // set vertical speed and acceleration limits
+    // set vertical speed and acceleration limits 设置垂直速度和加速度限制
     pos_control->set_max_speed_accel_z(-get_pilot_speed_dn(), g.pilot_speed_up, g.pilot_accel_z);
 
     // process pilot inputs unless we are in radio failsafe
-    if (!copter.failsafe.radio) {
+    if (!copter.failsafe.radio) {  //判断遥控器失控保护
         // apply SIMPLE mode transform to pilot inputs
         update_simple_mode();
 
-        // convert pilot input to lean angles
+        // convert pilot input to lean angles  飞手目标倾斜角度
         get_pilot_desired_lean_angles(target_roll, target_pitch, loiter_nav->get_angle_max_cd(), attitude_control->get_althold_lean_angle_max());
 
-        // process pilot's roll and pitch input
+        // process pilot's roll and pitch input 计算飞手目标加速度
         loiter_nav->set_pilot_desired_acceleration(target_roll, target_pitch);
 
-        // get pilot's desired yaw rate
+        // get pilot's desired yaw rate 获得飞行员目标航向角速度
         target_yaw_rate = get_pilot_desired_yaw_rate(channel_yaw->get_control_in());
 
         // get pilot desired climb rate
         target_climb_rate = get_pilot_desired_climb_rate(channel_throttle->get_control_in());
-        target_climb_rate = constrain_float(target_climb_rate, -get_pilot_speed_dn(), g.pilot_speed_up);
+        target_climb_rate = constrain_float(target_climb_rate, -get_pilot_speed_dn(), g.pilot_speed_up); //对输入进行限幅后输出
     } else {
         // clear out pilot desired acceleration in case radio failsafe event occurs and we do not switch to RTL for some reason
         loiter_nav->clear_pilot_desired_acceleration();
@@ -114,7 +114,7 @@ void ModeLoiter::run()
     // Loiter State Machine Determination
     AltHoldModeState loiter_state = get_alt_hold_state(target_climb_rate);
 
-    // Loiter State Machine
+    // Loiter State Machine   Loiter模式对应的不同状态
     switch (loiter_state) {
 
     case AltHold_MotorStopped:

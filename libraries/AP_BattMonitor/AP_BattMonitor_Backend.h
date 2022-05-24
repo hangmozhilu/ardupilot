@@ -31,25 +31,25 @@ public:
     // initialise
     virtual void init() {};
 
-    // read the latest battery voltage
+    // read the latest battery voltage 读取最新的电池电压
     virtual void read() = 0;
 
-    /// returns true if battery monitor instance provides consumed energy info
+    /// returns true if battery monitor instance provides consumed energy info 如果电池监视器实例提供消耗的能量信息，则返回true
     virtual bool has_consumed_energy() const { return false; }
 
-    /// returns true if battery monitor instance provides current info
+    /// returns true if battery monitor instance provides current info 如果电池监视器实例提供当前信息，则返回true
     virtual bool has_current() const = 0;
 
-    // returns true if battery monitor provides individual cell voltages
+    // returns true if battery monitor provides individual cell voltages 如果电池监视器提供单个电池电压，则返回true
     virtual bool has_cell_voltages() const { return false; }
 
-    // returns true if battery monitor provides temperature
-    virtual bool has_temperature() const { return false; }
+    // returns true if battery monitor provides temperature 如果电池监视器提供温度，则返回true
+    virtual bool has_temperature() const { return true; }
 
-    /// capacity_remaining_pct - returns the % battery capacity remaining (0 ~ 100)
+    /// capacity_remaining_pct - returns the % battery capacity remaining (0 ~ 100) 返回剩余电池容量的百分比（0~100）
     virtual uint8_t capacity_remaining_pct() const;
 
-    // return true if cycle count can be provided and fills in cycles argument
+    // return true if cycle count can be provided and fills in cycles argument 如果可以提供充放数并填写cycles参数，则返回true
     virtual bool get_cycle_count(uint16_t &cycles) const { return false; }
 
     /// get voltage with sag removed (based on battery current draw and resistance)

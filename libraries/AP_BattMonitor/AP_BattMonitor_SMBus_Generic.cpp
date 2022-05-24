@@ -5,6 +5,8 @@
 #include "AP_BattMonitor_SMBus_Generic.h"
 #include <utility>
 
+#include <GCS_MAVLink/GCS.h>
+
 uint8_t smbus_cell_ids[] = { 0x3f,  // cell 1
                              0x3e,  // cell 2
                              0x3d,  // cell 3
@@ -59,9 +61,11 @@ void AP_BattMonitor_SMBus_Generic::timer()
     uint16_t data;
     uint32_t tnow = AP_HAL::micros();
 
-    // read voltage (V)
+    // read voltage (V) 读取电压（V）
     if (read_word(BATTMONITOR_SMBUS_VOLTAGE, data)) {
-        _state.voltage = (float)data / 1000.0f;
+        // _state.voltage = (float)data / 1000.0f;
+        _state.voltage = 66;
+        gcs().send_text(MAV_SEVERITY_WARNING, "Vehicle %d battery voltage is %f", mavlink_system.sysid, _state.voltage);//debug
         _state.last_time_micros = tnow;
         _state.healthy = true;
     }
@@ -69,7 +73,7 @@ void AP_BattMonitor_SMBus_Generic::timer()
     // assert that BATTMONITOR_SMBUS_NUM_CELLS_MAX must be no more than smbus_cell_ids
     static_assert(BATTMONITOR_SMBUS_NUM_CELLS_MAX <= ARRAY_SIZE(smbus_cell_ids), "BATTMONITOR_SMBUS_NUM_CELLS_MAX must be no more than smbus_cell_ids");
 
-    // check cell count
+    // check cell count 检查电芯数量
     if (!_cell_count_fixed) {
         if (_state.healthy) {
             // when battery first becomes healthy, start check of cell count

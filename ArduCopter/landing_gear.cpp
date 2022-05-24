@@ -2,7 +2,7 @@
 
 #if LANDING_GEAR_ENABLED == ENABLED
 
-// Run landing gear controller at 10Hz
+// Run landing gear controller at 10Hz 以10Hz的频率运行起落架控制器
 void Copter::landinggear_update()
 {
     // exit immediately if no landing gear output has been enabled

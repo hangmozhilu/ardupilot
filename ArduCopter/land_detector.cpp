@@ -1,19 +1,19 @@
 #include "Copter.h"
-
-// Code to detect a crash main ArduCopter code
+//land_detector用于降落检测
+// Code to detect a crash main ArduCopter code 用于检测飞机坠毁的代码
 #define LAND_CHECK_ANGLE_ERROR_DEG  30.0f       // maximum angle error to be considered landing
 #define LAND_CHECK_LARGE_ANGLE_CD   1500.0f     // maximum angle target to be considered landing
 #define LAND_CHECK_ACCEL_MOVING     3.0f        // maximum acceleration after subtracting gravity
 
 
-// counter to verify landings
+// counter to verify landings 检查着陆情况的计数器
 static uint32_t land_detector_count = 0;
 
-// run land and crash detectors
-// called at MAIN_LOOP_RATE
-void Copter::update_land_and_crash_detectors()
+// run land and crash detectors 运行着陆和碰撞探测器
+// called at MAIN_LOOP_RATE 以主循环速率调用
+void Copter::update_land_and_crash_detectors() //着陆和碰撞探测器
 {
-    // update 1hz filtered acceleration
+    // update 1hz filtered acceleration 更新1hz滤波加速度
     Vector3f accel_ef = ahrs.get_accel_ef_blended();
     accel_ef.z += GRAVITY_MSS;
     land_accel_ef_filter.apply(accel_ef, scheduler.get_loop_period_s());
@@ -21,17 +21,17 @@ void Copter::update_land_and_crash_detectors()
     update_land_detector();
 
 #if PARACHUTE == ENABLED
-    // check parachute
+    // check parachute 检查降落伞
     parachute_check();
 #endif
 
     crash_check();
-    thrust_loss_check();
-    yaw_imbalance_check();
+    thrust_loss_check(); //推力损失检查
+    yaw_imbalance_check(); //检查一个大偏航不平衡，可能是由于校准不好的ESC或不对齐电机
 }
 
-// update_land_detector - checks if we have landed and updates the ap.land_complete flag
-// called at MAIN_LOOP_RATE
+// update_land_detector - checks if we have landed and updates the ap.land_complete flag 更新着陆探测器-检查我们是否着陆并更新着陆完成标志
+// called at MAIN_LOOP_RATE 以主循环速率调用
 void Copter::update_land_detector()
 {
     // land detector can not use the following sensors because they are unreliable during landing
@@ -41,22 +41,29 @@ void Copter::update_land_detector()
     // gyro output :                        on uneven surface the airframe may rock back an forth after landing
     // range finder :                       tend to be problematic at very short distances
     // input throttle :                     in slow land the input throttle may be only slightly less than hover
+    //着陆探测器不能使用以下传感器，因为它们在着陆过程中不可靠
+    //气压计高度：                           地面效应可能导致误差大于4米
+    // EKF垂直速度或高度：                   气压计差，地面撞击加速度大
+    //地球框架角度或角度误差：                在不平坦的表面着陆将迫使机身与地面角度匹配
+    //陀螺仪输出：                           在不平坦的表面上，机身可能在着陆后前后摇摆
+    //测距仪：                               在非常短的距离内往往有问题
+    //输入油门：                             在慢速着陆时，输入油门可能仅略小于悬停
 
     if (!motors->armed()) {
-        // if disarmed, always landed.
+        // if disarmed, always landed. 如果上锁，总是降落。
         set_land_complete(true);
     } else if (ap.land_complete) {
 #if FRAME_CONFIG == HELI_FRAME
-        // if rotor speed and collective pitch are high then clear landing flag
+        // if rotor speed and collective pitch are high then clear landing flag 如果旋翼速度和总螺距较高，则清除着陆标志
         if (motors->get_takeoff_collective() && motors->get_spool_state() == AP_Motors::SpoolState::THROTTLE_UNLIMITED) {
 #else
-        // if throttle output is high then clear landing flag
+        // if throttle output is high then clear landing flag 如果油门输出高，则清除着陆标志
         if (motors->get_throttle() > get_non_takeoff_throttle()) {
 #endif
             set_land_complete(false);
         }
     } else if (standby_active) {
-        // land detector will not run in standby mode
+        // land detector will not run in standby mode 陆地探测器将不会在待机模式下运行
         land_detector_count = 0;
     } else {
 

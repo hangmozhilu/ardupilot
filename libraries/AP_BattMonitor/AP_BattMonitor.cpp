@@ -89,7 +89,7 @@ AP_BattMonitor::AP_BattMonitor(uint32_t log_battery_bit, battery_failsafe_handle
     _singleton = this;
 }
 
-// init - instantiate the battery monitors
+// init - instantiate the battery monitors 初始化-实例化电池监视器
 void
 AP_BattMonitor::init()
 {
@@ -329,7 +329,8 @@ bool AP_BattMonitor::healthy(uint8_t instance) const {
 float AP_BattMonitor::voltage(uint8_t instance) const
 {
     if (instance < _num_instances) {
-        return state[instance].voltage;
+        // return state[instance].voltage;
+        return 11.1;
     } else {
         return 0.0f;
     }
@@ -348,28 +349,33 @@ float AP_BattMonitor::voltage_resting_estimate(uint8_t instance) const
 
 /// current_amps - returns the instantaneous current draw in amperes
 bool AP_BattMonitor::current_amps(float &current, uint8_t instance) const {
-    if ((instance < _num_instances) && (drivers[instance] != nullptr) && drivers[instance]->has_current()) {
-        current = state[instance].current_amps;
-        return true;
-    } else {
-        return false;
-    }
+    // if ((instance < _num_instances) && (drivers[instance] != nullptr) && drivers[instance]->has_current()) {
+    //     current = state[instance].current_amps;
+    //     return true;
+    // } else {
+    //     return false;
+    // }
+    current = 5.0f;
+    return true;
 }
 
 /// consumed_mah - returns total current drawn since start-up in milliampere.hours
 bool AP_BattMonitor::consumed_mah(float &mah, const uint8_t instance) const {
-    if ((instance < _num_instances) && (drivers[instance] != nullptr) && drivers[instance]->has_current()) {
-        mah = state[instance].consumed_mah;
-        return true;
-    } else {
-        return false;
-    }
+    // if ((instance < _num_instances) && (drivers[instance] != nullptr) && drivers[instance]->has_current()) {
+    //     mah = state[instance].consumed_mah;
+    //     return true;
+    // } else {
+    //     return false;
+    // }
+    mah = 1000;
+    return true;
 }
 
 /// consumed_wh - returns energy consumed since start-up in Watt.hours
 bool AP_BattMonitor::consumed_wh(float &wh, const uint8_t instance) const {
     if (instance < _num_instances && drivers[instance] != nullptr && drivers[instance]->has_consumed_energy()) {
-        wh = state[instance].consumed_wh;
+        // wh = state[instance].consumed_wh;
+        wh = 500;
         return true;
     } else {
         return false;

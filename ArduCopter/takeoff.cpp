@@ -16,27 +16,27 @@ bool Mode::do_user_takeoff_start(float takeoff_alt_cm)
     return true;
 }
 
-// initiate user takeoff - called when MAVLink TAKEOFF command is received
+// initiate user takeoff - called when MAVLink TAKEOFF command is received 启动用户起飞-收到MAVLink起飞命令时调用
 bool Mode::do_user_takeoff(float takeoff_alt_cm, bool must_navigate)
 {
     if (!copter.motors->armed()) {
         return false;
     }
     if (!copter.ap.land_complete) {
-        // can't takeoff again!
+        // can't takeoff again! 不能再起飞了！
         return false;
     }
     if (!has_user_takeoff(must_navigate)) {
-        // this mode doesn't support user takeoff
+        // this mode doesn't support user takeoff 此模式不支持用户起飞
         return false;
     }
     if (takeoff_alt_cm <= copter.current_loc.alt) {
-        // can't takeoff downwards...
+        // can't takeoff downwards... 不能向下起飞。。。
         return false;
     }
 
-    // Vehicles using motor interlock should return false if motor interlock is disabled.
-    // Interlock must be enabled to allow the controller to spool up the motor(s) for takeoff.
+    // Vehicles using motor interlock should return false if motor interlock is disabled. 如果电机互锁被禁用，使用电机互锁的车辆应返回false。
+    // Interlock must be enabled to allow the controller to spool up the motor(s) for takeoff. 必须启用互锁，以允许控制器向上卷动电机进行起飞。
     if (!motors->get_interlock() && copter.ap.using_interlock) {
         return false;
     }

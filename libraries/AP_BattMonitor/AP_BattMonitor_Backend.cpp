@@ -45,6 +45,10 @@ uint8_t AP_BattMonitor_Backend::capacity_remaining_pct() const
 // faster rates of change of the current and voltage readings cause faster updates to the resistance estimate
 // the battery resistance is calculated by comparing the latest current and voltage readings to a low-pass filtered current and voltage
 // high current steps are integrated into the resistance estimate by varying the time constant of the resistance filter
+//更新电池电阻估计值
+//电流和电压读数的变化速度越快，电阻估计值的更新速度就越快
+//通过将最新的电流和电压读数与低通滤波电流和电压进行比较，计算蓄电池电阻
+//通过改变电阻滤波器的时间常数，将大电流阶跃集成到电阻估计中
 void AP_BattMonitor_Backend::update_resistance_estimate()
 {
     // return immediately if no current
@@ -52,20 +56,20 @@ void AP_BattMonitor_Backend::update_resistance_estimate()
         return;
     }
 
-    // update maximum current seen since startup and protect against divide by zero
+    // update maximum current seen since startup and protect against divide by zero 更新自启动以来看到的最大电流
     _current_max_amps = MAX(_current_max_amps, _state.current_amps);
     float current_delta = _state.current_amps - _current_filt_amps;
     if (is_zero(current_delta)) {
         return;
     }
 
-    // update reference voltage and current
+    // update reference voltage and current 更新参考电压和电流
     if (_state.voltage > _resistance_voltage_ref) {
         _resistance_voltage_ref = _state.voltage;
         _resistance_current_ref = _state.current_amps;
     }
 
-    // calculate time since last update
+    // calculate time since last update 计算自上次更新以来的时间
     uint32_t now = AP_HAL::millis();
     float loop_interval = (now - _resistance_timer_ms) / 1000.0f;
     _resistance_timer_ms = now;
@@ -84,7 +88,7 @@ void AP_BattMonitor_Backend::update_resistance_estimate()
         _state.resistance = MIN(_state.resistance, resistance_max);
     }
 
-    // update the filtered voltage and currents
+    // update the filtered voltage and currents 更新过滤后的电压和电流
     _voltage_filt = _voltage_filt*(1-filt_alpha) + _state.voltage*filt_alpha;
     _current_filt_amps = _current_filt_amps*(1-filt_alpha) + _state.current_amps*filt_alpha;
 

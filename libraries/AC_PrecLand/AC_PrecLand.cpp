@@ -12,37 +12,37 @@
 
 extern const AP_HAL::HAL& hal;
 
-static const uint32_t EKF_INIT_TIME_MS = 2000; // EKF initialisation requires this many milliseconds of good sensor data
+static const uint32_t EKF_INIT_TIME_MS = 2000; // EKF initialisation requires this many milliseconds of good sensor data EKF初始化需要如此多毫秒的良好传感器数据
 static const uint32_t EKF_INIT_SENSOR_MIN_UPDATE_MS = 500; // Sensor must update within this many ms during EKF init, else init will fail
 static const uint32_t LANDING_TARGET_TIMEOUT_MS = 2000; // Sensor must update within this many ms, else prec landing will be switched off
 
 const AP_Param::GroupInfo AC_PrecLand::var_info[] = {
     // @Param: ENABLED
     // @DisplayName: Precision Land enabled/disabled
-    // @Description: Precision Land enabled/disabled
+    // @Description: Precision Land enabled/disabled 精密着陆启用/禁止
     // @Values: 0:Disabled, 1:Enabled
     // @User: Advanced
     AP_GROUPINFO_FLAGS("ENABLED", 0, AC_PrecLand, _enabled, 0, AP_PARAM_FLAG_ENABLE),
 
     // @Param: TYPE
     // @DisplayName: Precision Land Type
-    // @Description: Precision Land Type
-    // @Values: 0:None, 1:CompanionComputer, 2:IRLock, 3:SITL_Gazebo, 4:SITL
+    // @Description: Precision Land Type 精密着陆类型
+    // @Values: 0:None, 1:CompanionComputer机载计算机, 2:IRLock红外信标, 3:SITL_Gazebo, 4:SITL
     // @User: Advanced
     AP_GROUPINFO("TYPE",    1, AC_PrecLand, _type, 0),
 
     // @Param: YAW_ALIGN
-    // @DisplayName: Sensor yaw alignment
-    // @Description: Yaw angle from body x-axis to sensor x-axis.
+    // @DisplayName: Sensor yaw alignment 传感器偏航校准
+    // @Description: Yaw angle from body x-axis to sensor x-axis. 从机身x轴到传感器x轴的偏航角
     // @Range: 0 36000
-    // @Increment: 10
+    // @Increment: 10 步进
     // @User: Advanced
-    // @Units: cdeg
+    // @Units: cdeg 单位:百分之一度
     AP_GROUPINFO("YAW_ALIGN",    2, AC_PrecLand, _yaw_align, 0),
 
     // @Param: LAND_OFS_X
     // @DisplayName: Land offset forward
-    // @Description: Desired landing position of the camera forward of the target in vehicle body frame
+    // @Description: Desired landing position of the camera forward of the target in vehicle body frame 车身框架中目标前方摄像头的理想着陆位置
     // @Range: -20 20
     // @Increment: 1
     // @User: Advanced
@@ -51,7 +51,7 @@ const AP_Param::GroupInfo AC_PrecLand::var_info[] = {
 
     // @Param: LAND_OFS_Y
     // @DisplayName: Land offset right
-    // @Description: desired landing position of the camera right of the target in vehicle body frame
+    // @Description: desired landing position of the camera right of the target in vehicle body frame 车身框架中目标右侧摄像头的理想着陆位置
     // @Range: -20 20
     // @Increment: 1
     // @User: Advanced
@@ -59,22 +59,22 @@ const AP_Param::GroupInfo AC_PrecLand::var_info[] = {
     AP_GROUPINFO("LAND_OFS_Y",    4, AC_PrecLand, _land_ofs_cm_y, 0),
 
     // @Param: EST_TYPE
-    // @DisplayName: Precision Land Estimator Type
-    // @Description: Specifies the estimation method to be used
-    // @Values: 0:RawSensor, 1:KalmanFilter
+    // @DisplayName: Precision Land Estimator Type 
+    // @Description: Specifies the estimation method to be used 指定要使用的估算方法
+    // @Values: 0:RawSensor原始传感器数据, 1:KalmanFilter卡尔曼滤波数据
     // @User: Advanced
     AP_GROUPINFO("EST_TYPE",    5, AC_PrecLand, _estimator_type, 1),
 
     // @Param: ACC_P_NSE
-    // @DisplayName: Kalman Filter Accelerometer Noise
-    // @Description: Kalman Filter Accelerometer Noise, higher values weight the input from the camera more, accels less
+    // @DisplayName: Kalman Filter Accelerometer Noise 加速度计噪声
+    // @Description: Kalman Filter Accelerometer Noise, higher values weight the input from the camera more, accels less 加速度计噪声，更高的值会加重摄像头输入的权重，加速度会更小
     // @Range: 0.5 5
     // @User: Advanced
     AP_GROUPINFO("ACC_P_NSE", 6, AC_PrecLand, _accel_noise, 2.5f),
 
     // @Param: CAM_POS_X
-    // @DisplayName: Camera X position offset
-    // @Description: X position of the camera in body frame. Positive X is forward of the origin.
+    // @DisplayName: Camera X position offset 相机 X位置偏移
+    // @Description: X position of the camera in body frame. Positive X is forward of the origin.相机在机身坐标系X轴的值 原点前面为正值
     // @Units: m
     // @Range: -5 5
     // @Increment: 0.01
@@ -82,7 +82,7 @@ const AP_Param::GroupInfo AC_PrecLand::var_info[] = {
 
     // @Param: CAM_POS_Y
     // @DisplayName: Camera Y position offset
-    // @Description: Y position of the camera in body frame. Positive Y is to the right of the origin.
+    // @Description: Y position of the camera in body frame. Positive Y is to the right of the origin.相机在机身坐标系y轴的值 原点右面为正值
     // @Units: m
     // @Range: -5 5
     // @Increment: 0.01
@@ -90,7 +90,7 @@ const AP_Param::GroupInfo AC_PrecLand::var_info[] = {
 
     // @Param: CAM_POS_Z
     // @DisplayName: Camera Z position offset
-    // @Description: Z position of the camera in body frame. Positive Z is down from the origin.
+    // @Description: Z position of the camera in body frame. Positive Z is down from the origin.相机在机身坐标系z轴的值 原点下面为正值
     // @Units: m
     // @Range: -5 5
     // @Increment: 0.01
@@ -98,15 +98,15 @@ const AP_Param::GroupInfo AC_PrecLand::var_info[] = {
     AP_GROUPINFO("CAM_POS", 7, AC_PrecLand, _cam_offset, 0.0f),
 
     // @Param: BUS
-    // @DisplayName: Sensor Bus
-    // @Description: Precland sensor bus for I2C sensors.
-    // @Values: -1:DefaultBus,0:InternalI2C,1:ExternalI2C
+    // @DisplayName: Sensor Bus 传感器总线
+    // @Description: Precland sensor bus for I2C sensors. 用于I2C传感器的预着陆传感器总线
+    // @Values: -1:DefaultBus 默认总线, 0:InternalI2C 内部总线, 1:ExternalI2C 外部总线
     // @User: Advanced
     AP_GROUPINFO("BUS",    8, AC_PrecLand, _bus, -1),
 
     // @Param: LAG
     // @DisplayName: Precision Landing sensor lag
-    // @Description: Precision Landing sensor lag, to cope with variable landing_target latency
+    // @Description: Precision Landing sensor lag, to cope with variable landing_target latency 精确着陆传感器滞后，以应对可变的着陆目标延迟
     // @Range: 0.02 0.250
     // @Increment: 1
     // @Units: s
@@ -123,37 +123,37 @@ const AP_Param::GroupInfo AC_PrecLand::var_info[] = {
 //
 AC_PrecLand::AC_PrecLand()
 {
-    // set parameters to defaults
+    // set parameters to defaults 将参数设置为默认值
     AP_Param::setup_object_defaults(this, var_info);
 }
 
-// perform any required initialisation of landing controllers
-// update_rate_hz should be the rate at which the update method will be called in hz
+// perform any required initialisation of landing controllers 执行任何必要的着陆控制器初始化
+// update_rate_hz should be the rate at which the update method will be called in hz 更新频率hz应该是更新方法被调用的频率，以hz为单位
 void AC_PrecLand::init(uint16_t update_rate_hz)
 {
-    // exit immediately if init has already been run
+    // exit immediately if init has already been run 如果init已经运行，请立即退出
     if (_backend != nullptr) {
         return;
     }
 
-    // default health to false
+    // default health to false 默认运行状况为false
     _backend = nullptr;
     _backend_state.healthy = false;
 
-    // create inertial history buffer
-    // constrain lag parameter to be within bounds
+    // create inertial history buffer 创建惯性历史缓冲区
+    // constrain lag parameter to be within bounds 将滞后参数限制在范围内
     _lag = constrain_float(_lag, 0.02f, 0.25f);
 
-    // calculate inertial buffer size from lag and minimum of main loop rate and update_rate_hz argument
+    // calculate inertial buffer size from lag and minimum of main loop rate and update_rate_hz argument 根据主环路速率的滞后和最小值计算惯性缓冲区大小，并更新速率参数
     const uint16_t inertial_buffer_size = MAX((uint16_t)roundf(_lag * MIN(update_rate_hz, AP::scheduler().get_loop_rate_hz())), 1);
 
-    // instantiate ring buffer to hold inertial history, return on failure so no backends are created
+    // instantiate ring buffer to hold inertial history, return on failure so no backends are created 实例化环形缓冲区以保存惯性历史，故障时返回，因此不会创建后端
     _inertial_history = new ObjectArray<inertial_data_frame_s>(inertial_buffer_size);
     if (_inertial_history == nullptr) {
         return;
     }
 
-    // instantiate backend based on type parameter
+    // instantiate backend based on type parameter 基于类型参数实例化后端
     switch ((Type)(_type.get())) {
         // no type defined
         case Type::NONE:
@@ -183,15 +183,15 @@ void AC_PrecLand::init(uint16_t update_rate_hz)
     }
 }
 
-// update - give chance to driver to get updates from sensor
+// update - give chance to driver to get updates from sensor 更新-让驾驶员有机会从传感器获取更新
 void AC_PrecLand::update(float rangefinder_alt_cm, bool rangefinder_alt_valid)
 {
-    // exit immediately if not enabled
+    // exit immediately if not enabled 如果未启用，请立即退出
     if (_backend == nullptr || _inertial_history == nullptr) {
         return;
     }
 
-    // append current velocity and attitude correction into history buffer
+    // append current velocity and attitude correction into history buffer 将当前速度和姿态校正附加到历史缓冲区
     struct inertial_data_frame_s inertial_data_newest;
     const AP_AHRS_NavEKF &_ahrs = AP::ahrs_navekf();
     _ahrs.getCorrectedDeltaVelocityNED(inertial_data_newest.correctedVehicleDeltaVelocityNED, inertial_data_newest.dt);
@@ -209,7 +209,7 @@ void AC_PrecLand::update(float rangefinder_alt_cm, bool rangefinder_alt_valid)
     inertial_data_newest.time_usec = AP_HAL::micros64();
     _inertial_history->push_force(inertial_data_newest);
 
-    // update estimator of target position
+    // update estimator of target position 目标位置的更新估计
     if (_backend != nullptr && _enabled) {
         _backend->update();
         run_estimator(rangefinder_alt_cm*0.01f, rangefinder_alt_valid);
@@ -225,8 +225,8 @@ void AC_PrecLand::update(float rangefinder_alt_cm, bool rangefinder_alt_valid)
 bool AC_PrecLand::target_acquired()
 {
     if ((AP_HAL::millis()-_last_update_ms) > LANDING_TARGET_TIMEOUT_MS) {
-        // not had a sensor update since a long time
-        // probably lost the target
+        // not had a sensor update since a long time 很久没有更新过传感器了
+        // probably lost the target可能失去了目标
         _estimator_initialized = false;
         _target_acquired = false;
     }
@@ -274,7 +274,7 @@ bool AC_PrecLand::get_target_velocity_relative_cms(Vector2f& ret)
 // handle_msg - Process a LANDING_TARGET mavlink message
 void AC_PrecLand::handle_msg(const mavlink_landing_target_t &packet, uint32_t timestamp_ms)
 {
-    // run backend update
+    // run backend update 运行后端更新
     if (_backend != nullptr) {
         _backend->handle_msg(packet, timestamp_ms);
     }
