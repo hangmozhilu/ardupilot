@@ -21,7 +21,8 @@ env OPTIMIZE -Os
 USB_STRING_MANUFACTURER "HanHe"
 
 # custom firmware name shown in Mission Planner Messages, logs, and banners          Messages 启动消息、SD/tlog 日志 MSG 、GCS banner 都会显示 HanHe_Plane_4.6.3
-define AP_CUSTOM_FIRMWARE_STRING "HanHe_Plane_4.6.3" 
+# AP_CUSTOM_FIRMWARE_STRING is now defined per-vehicle in ArduPlane/ArduCopter wscript
+# define AP_CUSTOM_FIRMWARE_STRING "HanHe_Plane_4.6.3"
 
 # short board name used in system ID / banner (max 23 chars)   替换系统 ID 字符串里的板子名
 define CHIBIOS_SHORT_BOARD_NAME "HanHe_FC_7431"

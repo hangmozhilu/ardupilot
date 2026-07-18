@@ -32,15 +32,15 @@ def build(bld):
     )
 
     bld.ap_program(
-        program_name='arducopter',
+        program_name='HanHecopter',
         program_groups=['bin', 'copter'],
         use=vehicle + '_libs',
-        defines=['FRAME_CONFIG=MULTICOPTER_FRAME'],
+        defines=['FRAME_CONFIG=MULTICOPTER_FRAME', 'AP_CUSTOM_FIRMWARE_STRING="HanHe_Copter_4.6.3"'],
         )
 
     bld.ap_program(
-        program_name='arducopter-heli',
+        program_name='HanHecopter-heli',
         program_groups=['bin', 'heli'],
         use=vehicle + '_libs',
-        defines=['FRAME_CONFIG=HELI_FRAME'],
+        defines=['FRAME_CONFIG=HELI_FRAME', 'AP_CUSTOM_FIRMWARE_STRING="HanHe_Heli_4.6.3"'],
         )
