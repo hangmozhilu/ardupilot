@@ -35,5 +35,5 @@ def build(bld):
         program_name='HanHeplane',
         program_groups=['bin', 'plane'],
         use=vehicle + '_libs',
-        defines=['AP_CUSTOM_FIRMWARE_STRING="HanHe_Plane_4.6.3"'],
+        defines=['AP_CUSTOM_FIRMWARE_STRING="HanHe_Plane_S63"'],
     )

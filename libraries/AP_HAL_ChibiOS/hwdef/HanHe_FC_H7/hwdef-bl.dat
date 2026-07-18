@@ -1,5 +1,5 @@
 # hw definition file for processing by chibios_pins.py
-# for HanHe_FC_7431 bootloader (based on SkySakuraH743 bootloader)
+# for HanHe_FC_H7 bootloader (based on SkySakuraH743 bootloader)
 
 # MCU class and specific type
 MCU STM32H7xx STM32H743xx
@@ -7,8 +7,8 @@ MCU STM32H7xx STM32H743xx
 # board ID for firmware load
 # NOTE: 2714 is the original SkySakuraH743 board ID. If you want to keep using
 # the SkySakuraH743 bootloader binary, leave this as 2714. For a fully dedicated
-# HanHe_FC_7431 board, request/allocate a new APJ_BOARD_ID (e.g. via ArduPilot
-# upstream) and build a matching HanHe_FC_7431 bootloader.
+# HanHe_FC_H7 board, request/allocate a new APJ_BOARD_ID (e.g. via ArduPilot
+# upstream) and build a matching HanHe_FC_H7 bootloader.
 APJ_BOARD_ID 2714
 
 # USB setup         Bootloader / USB 描述符里的厂商名

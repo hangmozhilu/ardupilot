@@ -1,5 +1,5 @@
 # hw definition file for processing by chibios_pins.py
-# for HanHe_FC_7431 (based on SkySakuraH743 hardware)
+# for HanHe_FC_H7 (based on SkySakuraH743 hardware)
 
 # MCU class and specific type
 MCU STM32H7xx STM32H743xx
@@ -7,8 +7,8 @@ MCU STM32H7xx STM32H743xx
 # board ID for firmware load
 # NOTE: 2714 is the original SkySakuraH743 board ID. If you want to keep using
 # the SkySakuraH743 bootloader binary, leave this as 2714. For a fully dedicated
-# HanHe_FC_7431 board, request/allocate a new APJ_BOARD_ID (e.g. via ArduPilot
-# upstream) and build a matching HanHe_FC_7431 bootloader.
+# HanHe_FC_H7 board, request/allocate a new APJ_BOARD_ID (e.g. via ArduPilot
+# upstream) and build a matching HanHe_FC_H7 bootloader.
 APJ_BOARD_ID 2714
 
 # crystal frequency, setup to use external oscillator
@@ -20,12 +20,12 @@ env OPTIMIZE -Os
 # USB setup     Bootloader / USB 描述符里的厂商名
 USB_STRING_MANUFACTURER "HanHe"
 
-# custom firmware name shown in Mission Planner Messages, logs, and banners          Messages 启动消息、SD/tlog 日志 MSG 、GCS banner 都会显示 HanHe_Plane_4.6.3
+# custom firmware name shown in Mission Planner Messages, logs, and banners          Messages 启动消息、SD/tlog 日志 MSG 、GCS banner 都会显示 HanHe_Plane_S63
 # AP_CUSTOM_FIRMWARE_STRING is now defined per-vehicle in ArduPlane/ArduCopter wscript
-# define AP_CUSTOM_FIRMWARE_STRING "HanHe_Plane_4.6.3"
+# define AP_CUSTOM_FIRMWARE_STRING "HanHe_Plane_S63"
 
 # short board name used in system ID / banner (max 23 chars)   替换系统 ID 字符串里的板子名
-define CHIBIOS_SHORT_BOARD_NAME "HanHe_FC_7431"
+define CHIBIOS_SHORT_BOARD_NAME "HanHe_FC_H7"
 
 #debug on USART6 -- Uncomment if debugging
 #STDOUT_SERIAL SD6
