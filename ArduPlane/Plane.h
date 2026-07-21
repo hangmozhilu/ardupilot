@@ -110,6 +110,7 @@
 // Local modules
 #include "defines.h"
 #include "mode.h"
+#include "GA_Guidance.h"
 
 #if AP_SCRIPTING_ENABLED
 #include <AP_Scripting/AP_Scripting.h>
@@ -173,6 +174,7 @@ public:
     friend class ModeTakeoff;
     friend class ModeThermal;
     friend class ModeLoiterAltQLand;
+    friend class ModeFuchongceshi;
 
 #if AP_EXTERNAL_CONTROL_ENABLED
     friend class AP_ExternalControl_Plane;
@@ -326,11 +328,15 @@ private:
     ModeQRTL mode_qrtl;
     ModeQAcro mode_qacro;
     ModeLoiterAltQLand mode_loiter_qland;
+    ModeFuchongceshi mode_fuchongceshi;
 #if QAUTOTUNE_ENABLED
     ModeQAutotune mode_qautotune;
-#endif  // QAUTOTUNE_ENABLED
+#endif  // HAL_QUADPLANE_ENABLED
 #endif  // HAL_QUADPLANE_ENABLED
     ModeTakeoff mode_takeoff;
+
+    GA_Guidance ga_guidance;
+
 #if HAL_SOARING_ENABLED
     ModeThermal mode_thermal;
 #endif

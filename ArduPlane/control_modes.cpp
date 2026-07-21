@@ -92,6 +92,9 @@ Mode *Plane::mode_from_mode_num(const enum Mode::Number num)
     case Mode::Number::LOITER_ALT_QLAND:
         ret = &mode_loiter_qland;
         break;
+    case Mode::Number::FUCHONGCESHI:
+        ret = &mode_fuchongceshi;
+        break;
 #endif  // HAL_QUADPLANE_ENABLED
 
     }

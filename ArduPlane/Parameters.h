@@ -362,6 +362,7 @@ public:
 
         k_param_pullup = 270,
         k_param_quicktune,
+        k_param_ga_guidance,
     };
 
     AP_Int16 format_version;

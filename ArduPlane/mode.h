@@ -6,6 +6,7 @@
 #include <AP_Soaring/AP_Soaring.h>
 #include <AP_ADSB/AP_ADSB.h>
 #include <AP_Vehicle/ModeReason.h>
+#include <AP_HAL/AP_HAL.h>
 #include "quadplane.h"
 #include <AP_AHRS/AP_AHRS.h>
 #include <AP_Mission/AP_Mission.h>
@@ -61,6 +62,7 @@ public:
         THERMAL       = 24,
 #if HAL_QUADPLANE_ENABLED
         LOITER_ALT_QLAND = 25,
+        FUCHONGCESHI     = 26,
 #endif
     };
 
@@ -911,3 +913,81 @@ protected:
 };
 
 #endif
+
+#if HAL_QUADPLANE_ENABLED
+/*
+  FUCHONGCESHI flight mode for precision image-guided collision.
+  Tailless tailsitter fixed-wing mode that tracks a ground target from a
+  gimbal camera and dives through the target center at maximum speed.
+*/
+class ModeFuchongceshi : public Mode
+{
+public:
+
+    ModeFuchongceshi();
+
+    Number mode_number() const override { return Number::FUCHONGCESHI; }
+    const char *name() const override { return "FUCHONGCESHI"; }
+    const char *name4() const override { return "FUCH"; }
+
+    // methods that affect movement of the vehicle in this mode
+    void update() override;
+    void run() override;
+
+    // true if we are doing automatic navigation
+    bool does_auto_navigation() const override { return true; }
+
+protected:
+
+    bool _enter() override;
+    void _exit() override;
+
+private:
+
+    // target information received from gimbal/camera
+    struct {
+        int32_t camera_x;         // target x pixel coordinate
+        int32_t camera_y;         // target y pixel coordinate
+        int32_t gimbal_yaw_cdeg;  // gimbal yaw relative to aircraft body (0.01 deg, + = right)
+        int32_t gimbal_pitch_cdeg;// gimbal pitch relative to aircraft body (0.01 deg, + = up)
+        float confidence;         // target confidence 0..1
+        bool active;              // target valid flag
+        uint32_t last_update_ms;
+    } target;
+
+    // guidance state
+    struct {
+        float bearing_error_rad;
+        float bearing_rate_rad_s;
+        float elevation_error_rad;
+        float last_bearing_error_rad;
+        uint32_t last_update_ms;
+        bool target_valid;
+    } guidance;
+
+    // camera/gimbal configuration (hardcoded defaults for prototype)
+    static constexpr float CAMERA_WIDTH_PX = 1920.0f;
+    static constexpr float CAMERA_HEIGHT_PX = 1080.0f;
+    static constexpr float RC_OVERRIDE_DEADZONE = 0.15f;
+
+    // binary frame handling
+    static constexpr uint8_t FRAME_LEN = 23;        // 2 header + 4*4 payload + 1 confidence + 1 active + 1 checksum + 2 tail
+    static constexpr uint8_t PAYLOAD_TAIL_LEN = FRAME_LEN - 2;
+    uint8_t frame_buffer[FRAME_LEN];
+    uint8_t frame_idx;
+    uint8_t parse_state;    // 0: wait header1, 1: wait header2, 2: receiving frame body
+
+    bool loss_action_triggered; // true when target-loss action has already been triggered
+
+    AP_HAL::UARTDriver *uart;
+    bool uart_initialised;
+
+    void init_uart();
+    void read_serial();
+    bool validate_frame(const uint8_t *frame) const;
+    bool parse_frame(const uint8_t *frame);
+    void update_guidance();
+    bool target_valid() const;
+    void handle_target_loss();
+};
+#endif  // HAL_QUADPLANE_ENABLED

@@ -73,6 +73,7 @@ void GCS_Plane::update_vehicle_sensor_status_flags(void)
 #if HAL_QUADPLANE_ENABLED
     case Mode::Number::QRTL:
     case Mode::Number::LOITER_ALT_QLAND:
+    case Mode::Number::FUCHONGCESHI:
 #endif
     case Mode::Number::THERMAL:
         rate_controlled = true;
