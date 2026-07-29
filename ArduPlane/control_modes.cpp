@@ -95,6 +95,9 @@ Mode *Plane::mode_from_mode_num(const enum Mode::Number num)
     case Mode::Number::FUCHONGCESHI:
         ret = &mode_fuchongceshi;
         break;
+    case Mode::Number::SATGUID:
+        ret = &mode_satguid;
+        break;
 #endif  // HAL_QUADPLANE_ENABLED
 
     }

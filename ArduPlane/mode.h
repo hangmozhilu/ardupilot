@@ -63,6 +63,7 @@ public:
 #if HAL_QUADPLANE_ENABLED
         LOITER_ALT_QLAND = 25,
         FUCHONGCESHI     = 26,
+        SATGUID          = 27,
 #endif
     };
 
@@ -990,4 +991,7 @@ private:
     bool target_valid() const;
     void handle_target_loss();
 };
+
+#include "mode_satguid.h"
+
 #endif  // HAL_QUADPLANE_ENABLED

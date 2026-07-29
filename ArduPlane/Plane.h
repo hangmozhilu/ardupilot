@@ -111,6 +111,7 @@
 #include "defines.h"
 #include "mode.h"
 #include "GA_Guidance.h"
+#include "Sat_Guid_Guidance.h"
 
 #if AP_SCRIPTING_ENABLED
 #include <AP_Scripting/AP_Scripting.h>
@@ -175,6 +176,7 @@ public:
     friend class ModeThermal;
     friend class ModeLoiterAltQLand;
     friend class ModeFuchongceshi;
+    friend class ModeSatGuid;
 
 #if AP_EXTERNAL_CONTROL_ENABLED
     friend class AP_ExternalControl_Plane;
@@ -329,6 +331,7 @@ private:
     ModeQAcro mode_qacro;
     ModeLoiterAltQLand mode_loiter_qland;
     ModeFuchongceshi mode_fuchongceshi;
+    ModeSatGuid mode_satguid;
 #if QAUTOTUNE_ENABLED
     ModeQAutotune mode_qautotune;
 #endif  // HAL_QUADPLANE_ENABLED
@@ -336,6 +339,7 @@ private:
     ModeTakeoff mode_takeoff;
 
     GA_Guidance ga_guidance;
+    Sat_Guid_Guidance sat_guid_guidance;
 
 #if HAL_SOARING_ENABLED
     ModeThermal mode_thermal;

@@ -31,8 +31,13 @@ def build(bld):
         ],
     )
 
+    # SITL expects the standard binary name 'arduplane', while the
+    # HanHe_FC_H7 hardware build uses the custom firmware name.
+    board_name = bld.env.BOARD
+    program_name = 'arduplane' if board_name == 'sitl' else 'HanHeplane'
+
     bld.ap_program(
-        program_name='HanHeplane',
+        program_name=program_name,
         program_groups=['bin', 'plane'],
         use=vehicle + '_libs',
         defines=['AP_CUSTOM_FIRMWARE_STRING="HanHe_Plane_S63"'],

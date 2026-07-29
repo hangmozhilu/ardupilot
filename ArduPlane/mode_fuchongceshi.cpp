@@ -233,8 +233,8 @@ void ModeFuchongceshi::update_guidance()
 
     // deskew image rotation due to aircraft roll
     const float roll = ahrs.get_roll();
-    const float cr = cosf(-roll);
-    const float sr = sinf(-roll);
+    const float cr = cosf(roll);
+    const float sr = sinf(roll);
     const float nx_level = nx * cr - ny * sr;
     const float ny_level = nx * sr + ny * cr;
 

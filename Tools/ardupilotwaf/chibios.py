@@ -672,7 +672,7 @@ def pre_build(bld):
 def build(bld):
 
 
-    hwdef_rule="%s '%s/hwdef/scripts/chibios_hwdef.py' -D '%s' --params '%s' '%s'" % (
+    hwdef_rule='%s "%s/hwdef/scripts/chibios_hwdef.py" -D "%s" --params "%s" "%s"' % (
             bld.env.get_flat('PYTHON'),
             bld.env.AP_HAL_ROOT,
             bld.env.BUILDROOT,
