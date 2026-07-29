@@ -5,21 +5,29 @@
 #if HAL_QUADPLANE_ENABLED
 
 /*
-  SatGuid flight mode for GPS-guided collision / pass-through.
+  SatGuid flight mode for GPS-guided precision collision with static targets.
 
-  Three-phase mission profile:
-    1. VTOL takeoff to SGUID_TKOF_H relative altitude.
-    2. Forward transition to fixed-wing, then cruise with random
-       lateral/altitude corridor to avoid interception.
-    3. Pop-up (optional) and high-speed dive through target GPS coordinate.
+  Supported platforms: tailsitter VTOL (e.g. Q_FRAME_CLASS=1, Q_FRAME_TYPE=1,
+  Q_TAILSIT_ENABLE=2).
 
-  Close range handling (< SGUID_CLO_DST):
-    - Optional Immelmann turn to rapidly reverse heading toward target.
+  Mission profile:
+    1. TAKEOFF   - VTOL climb to SGUID_TKOF_H above the arming / takeoff point.
+    2. TRANSITION- tailsitter forward transition to fixed-wing flight.
+    3. CLIMB     - fixed-wing climb to SGUID_CRALT (or higher for close-range).
+    4. CRUISE    - fixed-wing cruise toward target with random lateral/altitude/speed corridor.
+    5. DIVE      - waypoint-style terminal guidance with steep dive angle (>=25 deg).
+    6. REPOSITION- if too high to complete the dive, level out, fly ahead,
+                   turn back and re-aim.
+
+  Close-range handling (< SGUID_CLO_DST):
+    - Skip cruise, climb high, then dive directly on the target.
 
   Target input sources (SGUID_TGT_SRC):
     0 = parameters SGUID_TGT_LAT/LON/ALT
-    1 = GCS guided target command
-    2 = serial device (Fuchong binary frame type 0x01)
+    1 = serial device (Fuchong GPS frame type 0x01)
+
+  SatGuid is independent from FUCHONGCESHI; it uses the SGUID_ parameter
+  namespace and has its own guidance logic.
 */
 class ModeSatGuid : public Mode
 {
@@ -39,9 +47,6 @@ public:
     bool does_auto_throttle() const override { return state != State::TAKEOFF && state != State::TRANSITION; }
     bool is_guided_mode() const override { return true; }
 
-    // handle a guided target request from GCS
-    bool handle_guided_request(Location target_loc) override;
-
 protected:
 
     bool _enter() override;
@@ -53,58 +58,55 @@ private:
     enum class State {
         TAKEOFF,       // VTOL climb to takeoff height
         TRANSITION,    // tailsitter forward transition
-        CRUISE,        // fixed-wing cruise toward target
-        POPUP,         // pre-dive popup climb
+        CLIMB,         // fixed-wing climb to cruise / dive-start altitude
+        CRUISE,        // fixed-wing cruise toward target with corridor offsets
         DIVE,          // terminal guidance dive
-        IMMELMANN,     // close range half-loop + roll reposition
+        REPOSITION,    // overshoot recovery: level, turn back, re-aim
         TARGET_LOSS    // target lost, execute loss_action
     } state;
 
-    // target state estimator
+    // target state (static target, updated from parameter or serial)
     struct {
-        Location loc;             // estimated target location (AMSL)
-        Location last_loc;        // previous target location for differentiation
-        Vector3f vel_ned;         // estimated target velocity NED (m/s)
-        Vector3f raw_vel_ned;     // measured velocity from serial
+        Location loc;             // target location (AMSL)
         uint32_t last_update_ms;
         uint32_t last_serial_ms;
-        uint32_t last_loc_update_ms;
         bool active_param;        // true if parameter source selected and valid
-        bool active_gcs;          // true if GCS target received
         bool active_serial;       // true if serial frame received
     } target;
 
     // guidance internal state
     struct {
-        float bearing_rad;        // bearing to predicted target
-        float bearing_error_rad;
-        float bearing_rate_rad_s;
-        float elevation_rad;      // elevation to predicted target
-        float elevation_error_rad;
+        float bearing_rad;        // bearing to target
+        float bearing_error_rad;  // bearing relative to current yaw
+        float bearing_rate_rad_s; // bearing rate for damping
+        float elevation_rad;      // elevation to target
+        float elevation_rate_rad_s; // elevation rate for damping
         float distance_m;
         float last_bearing_rad;
+        float last_elevation_rad;
         uint32_t last_update_ms;
         bool target_valid;
     } guidance;
 
-    // Immelmann maneuver state
-    struct {
-        uint32_t start_ms;
-        float entry_heading_rad;
-        float entry_airspeed;
-        bool top_reached;
-    } imm;
-
     // random corridor phase (accumulated for sinusoid)
     float corridor_phase;
 
-    // VTOL takeoff origin
+    // VTOL takeoff origin (AMSL, cm)
     int32_t takeoff_start_alt_cm;
 
-    // popup/dive tracking (AMSL)
-    float popup_top_amsl_m;
+    // climb / cruise target altitude (relative to home, m)
+    float climb_target_rel_m;
 
-    // serial protocol state (same UART as FUCHONGCESHI)
+    // reposition state
+    struct {
+        bool active;
+        Location start_loc;       // location where reposition started
+        float entry_heading_rad;  // heading when reposition started
+        bool turn_started;        // true after straight-ahead leg is complete
+        bool climb_complete;      // true after low-altitude safety climb is done
+    } repos;
+
+    // serial protocol state (Fuchong GPS frame)
     AP_HAL::UARTDriver *uart;
     bool uart_initialised;
     uint8_t frame_buffer[32];
@@ -131,16 +133,18 @@ private:
     void update_state_machine();
     void run_takeoff();
     void run_transition();
+    void run_climb();
     void run_cruise();
-    void run_popup();
     void run_dive();
-    void run_immelmann();
+    void run_reposition();
     void run_target_loss();
 
-    void compute_guidance(const Location &pred_target);
-    void set_fw_attitude(float roll_cmd_rad, float pitch_cmd_rad, float throttle_pct);
+    void compute_guidance();
+    void set_fw_waypoint(const Location &wp);
+    void select_climb_target();
+    void apply_roll_limit();
+    void apply_pitch_limit();
     float wrap_pi(float angle) const;
-    Location predict_target(float dt) const;
 
     // helper to get best available airspeed estimate
     float get_air_speed() const;

@@ -16,17 +16,18 @@ static inline int32_t int32_from_le(const uint8_t *b)
                      ((uint32_t)b[3] << 24));
 }
 
-// little-endian int16 from byte buffer
-static inline int16_t int16_from_le(const uint8_t *b)
-{
-    return (int16_t)((uint16_t)b[0] | ((uint16_t)b[1] << 8));
-}
+// Optional SatGuid debug prints. Change #if 0 to #if 1 to enable.
+#if 0
+#define SATGUID_DBG(fmt, ...) plane.gcs().send_text(MAV_SEVERITY_DEBUG, "SATGUID: " fmt, ##__VA_ARGS__)
+#else
+#define SATGUID_DBG(fmt, ...) ((void)0)
+#endif
 
 ModeSatGuid::ModeSatGuid()
     : state(State::TAKEOFF),
       corridor_phase(0.0f),
       takeoff_start_alt_cm(0),
-      popup_top_amsl_m(0.0f),
+      climb_target_rel_m(0.0f),
       uart(nullptr),
       uart_initialised(false),
       frame_idx(0),
@@ -35,52 +36,24 @@ ModeSatGuid::ModeSatGuid()
     memset(frame_buffer, 0, sizeof(frame_buffer));
     target = {};
     guidance = {};
-    imm = {};
+    repos = {};
 }
 
 bool ModeSatGuid::_enter()
 {
-    // only the serial target source needs the FuchongTarget UART
-    if (plane.sat_guid_guidance.tgt_src.get() == 2) {
+    // only the serial target source needs the target UART
+    if (plane.sat_guid_guidance.tgt_src.get() == 1) {
         init_uart();
     }
 
-    state = State::TAKEOFF;
+    // reset internal state
     corridor_phase = 0.0f;
-    popup_top_amsl_m = 0.0f;
-    takeoff_start_alt_cm = 0;
+    climb_target_rel_m = 0.0f;
+    target = {};
+    guidance = {};
+    repos = {};
 
-    target.last_update_ms = 0;
-    target.last_serial_ms = 0;
-    target.last_loc_update_ms = 0;
-    target.active_param = false;
-    target.active_gcs = false;
-    target.active_serial = false;
-    target.vel_ned.zero();
-    target.raw_vel_ned.zero();
-
-    guidance.bearing_rad = 0.0f;
-    guidance.bearing_error_rad = 0.0f;
-    guidance.bearing_rate_rad_s = 0.0f;
-    guidance.elevation_rad = 0.0f;
-    guidance.elevation_error_rad = 0.0f;
-    guidance.distance_m = 0.0f;
-    guidance.last_bearing_rad = 0.0f;
-    guidance.last_update_ms = 0;
-    guidance.target_valid = false;
-
-    imm.start_ms = 0;
-    imm.entry_heading_rad = 0.0f;
-    imm.entry_airspeed = 0.0f;
-    imm.top_reached = false;
-
-    plane.nav_roll_cd = 0;
-    plane.nav_pitch_cd = 0;
-
-    // SATGUID is fully autonomous; do not wait for pilot throttle
-    quadplane.throttle_wait = false;
-
-    // load parameter target if selected
+    // load parameter target immediately so the initial phase decision can plan
     if (plane.sat_guid_guidance.tgt_src.get() == 0) {
         if (load_param_target()) {
             target.last_update_ms = AP_HAL::millis();
@@ -88,6 +61,41 @@ bool ModeSatGuid::_enter()
             plane.gcs().send_text(MAV_SEVERITY_WARNING, "SATGUID: target coordinates not set or invalid");
         }
     }
+
+    // takeoff height is relative to the arming / takeoff point (home altitude)
+    takeoff_start_alt_cm = plane.home.alt;
+    if (takeoff_start_alt_cm == 0) {
+        // home altitude not available yet, fall back to the current absolute altitude
+        int32_t current_alt_cm = 0;
+        if (plane.current_loc.get_alt_cm(Location::AltFrame::ABSOLUTE, current_alt_cm)) {
+            takeoff_start_alt_cm = current_alt_cm;
+        }
+    }
+
+    // Determine initial phase based on current flight configuration so that
+    // SATGUID can be entered from VTOL modes (QLOITER/QHOVER) or fixed-wing
+    // modes (FBWA/FBWB/etc.) without requiring a fresh VTOL takeoff.
+    if (plane.quadplane.in_vtol_mode()) {
+        state = State::TAKEOFF;
+    } else if (plane.quadplane.in_frwd_transition()) {
+        state = State::TRANSITION;
+    } else {
+        // Already in fixed-wing flight: skip VTOL takeoff and transition.
+        state = State::CLIMB;
+        if (target_valid()) {
+            compute_guidance();
+            select_climb_target();
+        } else {
+            climb_target_rel_m = float(plane.sat_guid_guidance.cruise_alt.get());
+        }
+        plane.gcs().send_text(MAV_SEVERITY_INFO, "SATGUID: entered in fixed-wing, skip takeoff");
+    }
+
+    plane.nav_roll_cd = 0;
+    plane.nav_pitch_cd = 0;
+
+    // SATGUID is fully autonomous; do not wait for pilot throttle
+    quadplane.throttle_wait = false;
 
     plane.gcs().send_text(MAV_SEVERITY_INFO, "SATGUID: entered");
     return true;
@@ -142,8 +150,7 @@ bool ModeSatGuid::parse_gps_frame(const uint8_t *frame)
     const int32_t lat_e7 = int32_from_le(frame + 1);
     const int32_t lon_e7 = int32_from_le(frame + 5);
     const int32_t alt_cm = int32_from_le(frame + 9);
-    const int16_t vx_cms = int16_from_le(frame + 13);
-    const int16_t vy_cms = int16_from_le(frame + 15);
+    // vx/vy are included in the frame but ignored for static targets
 
     Location new_loc(lat_e7, lon_e7, alt_cm, Location::AltFrame::ABSOLUTE);
     if (!new_loc.initialised()) {
@@ -151,9 +158,6 @@ bool ModeSatGuid::parse_gps_frame(const uint8_t *frame)
     }
 
     target.loc = new_loc;
-    target.raw_vel_ned.x = vx_cms * 0.01f;
-    target.raw_vel_ned.y = vy_cms * 0.01f;
-    target.raw_vel_ned.z = 0.0f; // estimate z from altitude filter if needed
     target.active_serial = true;
     target.last_serial_ms = AP_HAL::millis();
     target.last_update_ms = target.last_serial_ms;
@@ -195,7 +199,7 @@ void ModeSatGuid::read_serial()
             if (frame_idx >= 21) {
                 // full frame body received: payload(18) + checksum(1) + tail(2)
                 if (validate_frame(frame_buffer, 21) && parse_gps_frame(frame_buffer)) {
-                    // target state update handled in parse_gps_frame
+                    // target state updated in parse_gps_frame
                 }
                 parse_state = 0;
                 frame_idx = 0;
@@ -208,20 +212,6 @@ void ModeSatGuid::read_serial()
             break;
         }
     }
-}
-
-bool ModeSatGuid::handle_guided_request(Location target_loc)
-{
-    if (!target_loc.initialised()) {
-        return false;
-    }
-    // store as AMSL absolute
-    target_loc.change_alt_frame(Location::AltFrame::ABSOLUTE);
-    target.loc = target_loc;
-    target.active_gcs = true;
-    target.last_update_ms = AP_HAL::millis();
-    plane.gcs().send_text(MAV_SEVERITY_INFO, "SATGUID: GCS target set");
-    return true;
 }
 
 // load target location from SGUID_TGT_* parameters; valid only when both
@@ -240,7 +230,6 @@ bool ModeSatGuid::load_param_target()
 void ModeSatGuid::update_target_state()
 {
     const uint32_t now = AP_HAL::millis();
-    const float alpha = plane.sat_guid_guidance.tgt_filt.get();
 
     // parameter target is persistent: reload from parameters every cycle so it
     // never times out and in-flight edits to SGUID_TGT_LAT/LON/ALT take effect
@@ -248,43 +237,10 @@ void ModeSatGuid::update_target_state()
         target.last_update_ms = now;
     }
 
-    // serial frame provides direct velocity; use it when valid and fast
-    if (target.active_serial && target.raw_vel_ned.length() > plane.sat_guid_guidance.tgt_static_thr.get()) {
-        if (alpha > 0.0f) {
-            target.vel_ned = target.vel_ned * (1.0f - alpha) + target.raw_vel_ned * alpha;
-        } else {
-            target.vel_ned = target.raw_vel_ned;
-        }
-    } else if (target.last_loc_update_ms != 0 && target.last_loc.initialised() && target.loc.initialised()) {
-        // differentiate successive target positions for GCS/parameter moving targets
-        const float dt = (now - target.last_loc_update_ms) * 0.001f;
-        if (dt > 0.0f && dt <= 1.0f) {
-            const float dist_m = target.last_loc.get_distance(target.loc);
-            const float bearing_rad = target.last_loc.get_bearing(target.loc);
-            Vector3f new_vel_ned;
-            new_vel_ned.x = (dist_m / dt) * cosf(bearing_rad);
-            new_vel_ned.y = (dist_m / dt) * sinf(bearing_rad);
-            int32_t alt_now_cm, alt_last_cm;
-            if (target.loc.get_alt_cm(Location::AltFrame::ABSOLUTE, alt_now_cm) &&
-                target.last_loc.get_alt_cm(Location::AltFrame::ABSOLUTE, alt_last_cm)) {
-                new_vel_ned.z = -((alt_now_cm - alt_last_cm) * 0.01f) / dt; // NED down is positive
-            } else {
-                new_vel_ned.z = 0.0f;
-            }
-            if (new_vel_ned.length() > plane.sat_guid_guidance.tgt_static_thr.get()) {
-                if (alpha > 0.0f) {
-                    target.vel_ned = target.vel_ned * (1.0f - alpha) + new_vel_ned * alpha;
-                } else {
-                    target.vel_ned = new_vel_ned;
-                }
-            } else {
-                target.vel_ned.zero();
-            }
-        }
+    // serial target: a fresh frame refreshes the timestamp
+    if (target.active_serial) {
+        target.last_update_ms = target.last_serial_ms;
     }
-
-    target.last_loc = target.loc;
-    target.last_loc_update_ms = now;
 }
 
 bool ModeSatGuid::target_valid() const
@@ -316,23 +272,6 @@ void ModeSatGuid::handle_target_loss()
     // action == 0: stay in SATGUID with last commands (handled by state)
 }
 
-Location ModeSatGuid::predict_target(float dt) const
-{
-    Location pred = target.loc;
-    if (dt > 0.0f && target.vel_ned.length() > plane.sat_guid_guidance.tgt_static_thr.get()) {
-        // extrapolate by velocity * dt in NED (Location::offset takes metres)
-        const float d_north = target.vel_ned.x * dt;
-        const float d_east = target.vel_ned.y * dt;
-        pred.offset(d_north, d_east);
-        // altitude extrapolation
-        int32_t alt_cm;
-        if (pred.get_alt_cm(Location::AltFrame::ABSOLUTE, alt_cm)) {
-            pred.set_alt_cm(alt_cm + int32_t(-target.vel_ned.z * dt * 100.0f), Location::AltFrame::ABSOLUTE);
-        }
-    }
-    return pred;
-}
-
 float ModeSatGuid::wrap_pi(float angle) const
 {
     while (angle > M_PI) {
@@ -344,55 +283,79 @@ float ModeSatGuid::wrap_pi(float angle) const
     return angle;
 }
 
-void ModeSatGuid::compute_guidance(const Location &pred_target)
+void ModeSatGuid::compute_guidance()
 {
+    if (!target.loc.initialised()) {
+        return;
+    }
+
     const uint32_t now = AP_HAL::millis();
 
-    // distance and bearing to predicted target (horizontal)
-    guidance.distance_m = plane.current_loc.get_distance(pred_target);
-    guidance.bearing_rad = plane.current_loc.get_bearing(pred_target);
+    // distance and bearing to target (horizontal)
+    guidance.distance_m = plane.current_loc.get_distance(target.loc);
+    guidance.bearing_rad = plane.current_loc.get_bearing(target.loc);
 
-    // elevation to predicted target
+    // elevation to target
     float alt_diff_m = 0.0f;
     int32_t target_alt_cm, current_alt_cm;
-    if (pred_target.get_alt_cm(Location::AltFrame::ABSOLUTE, target_alt_cm) &&
+    if (target.loc.get_alt_cm(Location::AltFrame::ABSOLUTE, target_alt_cm) &&
         plane.current_loc.get_alt_cm(Location::AltFrame::ABSOLUTE, current_alt_cm)) {
         alt_diff_m = (target_alt_cm - current_alt_cm) * 0.01f;
     }
     guidance.elevation_rad = atan2f(alt_diff_m, MAX(guidance.distance_m, 1.0f));
-    guidance.elevation_error_rad = guidance.elevation_rad - radians(plane.sat_guid_guidance.dive_ang.get());
 
-    // bearing error relative to current yaw
+    // bearing / elevation error and rates
     const float yaw = ahrs.get_yaw();
     guidance.bearing_error_rad = wrap_pi(guidance.bearing_rad - yaw);
 
-    // bearing rate for PNG and damping
     float dt = 0.0f;
     if (guidance.last_update_ms != 0) {
         dt = (now - guidance.last_update_ms) * 0.001f;
     }
     if (dt <= 0.0f || dt > 0.5f) {
         guidance.bearing_rate_rad_s = 0.0f;
+        guidance.elevation_rate_rad_s = 0.0f;
     } else {
         guidance.bearing_rate_rad_s = wrap_pi(guidance.bearing_rad - guidance.last_bearing_rad) / dt;
+        guidance.elevation_rate_rad_s = (guidance.elevation_rad - guidance.last_elevation_rad) / dt;
     }
     guidance.last_bearing_rad = guidance.bearing_rad;
+    guidance.last_elevation_rad = guidance.elevation_rad;
     guidance.last_update_ms = now;
 }
 
-void ModeSatGuid::set_fw_attitude(float roll_cmd_rad, float pitch_cmd_rad, float throttle_pct)
+void ModeSatGuid::apply_roll_limit()
 {
-    const float roll_lim_rad = radians(plane.sat_guid_guidance.roll_lim.get());
-    const float pitch_min_rad = radians(plane.sat_guid_guidance.pitch_min.get());
-    const float pitch_max_rad = radians(plane.sat_guid_guidance.pitch_max.get());
+    const int32_t roll_lim_cd = int32_t(plane.sat_guid_guidance.roll_lim.get() * 100.0f);
+    plane.nav_roll_cd = constrain_int32(plane.nav_roll_cd, -roll_lim_cd, roll_lim_cd);
+}
 
-    roll_cmd_rad = constrain_float(roll_cmd_rad, -roll_lim_rad, roll_lim_rad);
-    pitch_cmd_rad = constrain_float(pitch_cmd_rad, pitch_min_rad, pitch_max_rad);
+void ModeSatGuid::apply_pitch_limit()
+{
+    const int32_t pitch_min_cd = int32_t(plane.sat_guid_guidance.pitch_min.get() * 100.0f);
+    const int32_t pitch_max_cd = int32_t(plane.sat_guid_guidance.pitch_max.get() * 100.0f);
+    plane.nav_pitch_cd = constrain_int32(plane.nav_pitch_cd, pitch_min_cd, pitch_max_cd);
+}
 
-    plane.nav_roll_cd = int32_t(degrees(roll_cmd_rad) * 100.0f);
-    plane.nav_pitch_cd = int32_t(degrees(pitch_cmd_rad) * 100.0f);
+void ModeSatGuid::set_fw_waypoint(const Location &wp)
+{
+    plane.prev_WP_loc = plane.current_loc;
+    plane.next_WP_loc = wp;
+    plane.set_target_altitude_location(wp);
+    plane.nav_controller->update_waypoint(plane.prev_WP_loc, plane.next_WP_loc);
+}
 
-    SRV_Channels::set_output_scaled(SRV_Channel::k_throttle, throttle_pct * 100.0f);
+void ModeSatGuid::select_climb_target()
+{
+    // Choose climb-out altitude. For close-range engagements, climb higher than
+    // cruise altitude so the aircraft can execute a steep dive.
+    if (guidance.distance_m < plane.sat_guid_guidance.close_dist.get()) {
+        const float min_dive_ht_m = guidance.distance_m * tanf(fabsf(radians(45.0f)));
+        climb_target_rel_m = MAX(float(plane.sat_guid_guidance.cruise_alt.get()),
+                                 plane.relative_altitude + min_dive_ht_m + 20.0f);
+    } else {
+        climb_target_rel_m = float(plane.sat_guid_guidance.cruise_alt.get());
+    }
 }
 
 void ModeSatGuid::update()
@@ -406,34 +369,24 @@ void ModeSatGuid::update()
     }
 
     if (state == State::TARGET_LOSS) {
-        // target recovered, resume from cruise/dive
+        // target recovered, resume from cruise
         state = State::CRUISE;
     }
 
+    compute_guidance();
     update_state_machine();
 }
 
 void ModeSatGuid::update_state_machine()
 {
-    const uint32_t now = AP_HAL::millis();
-
-    // predict target position to account for latency
-    const float latency_s = (now - target.last_update_ms) * 0.001f;
-    const Location pred_target = predict_target(latency_s);
-    compute_guidance(pred_target);
-    guidance.target_valid = true;
+    int32_t current_alt_cm = 0;
+    if (!plane.current_loc.get_alt_cm(Location::AltFrame::ABSOLUTE, current_alt_cm)) {
+        current_alt_cm = plane.current_loc.alt;
+    }
 
     switch (state) {
     case State::TAKEOFF:
     {
-        // hand over to run_takeoff for control; switch to transition on height
-        int32_t current_alt_cm;
-        if (!plane.current_loc.get_alt_cm(Location::AltFrame::ABSOLUTE, current_alt_cm)) {
-            current_alt_cm = plane.current_loc.alt;
-        }
-        if (takeoff_start_alt_cm == 0) {
-            takeoff_start_alt_cm = current_alt_cm;
-        }
         const int32_t target_takeoff_alt_cm = takeoff_start_alt_cm + int32_t(plane.sat_guid_guidance.takeoff_h.get()) * 100;
         if (current_alt_cm >= target_takeoff_alt_cm) {
             plane.gcs().send_text(MAV_SEVERITY_INFO, "SATGUID: takeoff complete, starting transition");
@@ -447,71 +400,64 @@ void ModeSatGuid::update_state_machine()
     {
         if (plane.quadplane.transition->complete()) {
             plane.gcs().send_text(MAV_SEVERITY_INFO, "SATGUID: transition complete");
-            state = State::CRUISE;
+            select_climb_target();
+            if (guidance.distance_m < plane.sat_guid_guidance.close_dist.get()) {
+                plane.gcs().send_text(MAV_SEVERITY_INFO, "SATGUID: close range, climb to %.1f m", (double)climb_target_rel_m);
+            }
+            state = State::CLIMB;
+        }
+        break;
+    }
+
+    case State::CLIMB:
+    {
+        // re-evaluate climb target in case target became valid after fixed-wing entry
+        select_climb_target();
+        if (plane.relative_altitude >= climb_target_rel_m) {
+            if (guidance.distance_m < plane.sat_guid_guidance.close_dist.get()) {
+                plane.gcs().send_text(MAV_SEVERITY_INFO, "SATGUID: close range climb complete, dive");
+                state = State::DIVE;
+            } else {
+                plane.gcs().send_text(MAV_SEVERITY_INFO, "SATGUID: climb complete, cruise");
+                state = State::CRUISE;
+            }
         }
         break;
     }
 
     case State::CRUISE:
     {
-        const float close_dist = plane.sat_guid_guidance.close_dist.get();
-        if (guidance.distance_m < close_dist) {
-            if (plane.sat_guid_guidance.imm_ena.get() != 0 &&
-                plane.sat_guid_guidance.imm_aspd_min.get() < get_air_speed()) {
-                plane.gcs().send_text(MAV_SEVERITY_INFO, "SATGUID: close range, Immelmann");
-                state = State::IMMELMANN;
-                imm.start_ms = now;
-                imm.entry_heading_rad = ahrs.get_yaw();
-                imm.entry_airspeed = get_air_speed();
-                imm.top_reached = false;
-                break;
-            }
-        }
-
         if (guidance.distance_m < plane.sat_guid_guidance.dive_dist.get()) {
-            plane.gcs().send_text(MAV_SEVERITY_INFO, "SATGUID: dive");
+            plane.gcs().send_text(MAV_SEVERITY_INFO, "SATGUID: start dive");
             state = State::DIVE;
-            break;
-        }
-
-        if (plane.sat_guid_guidance.popup_ena.get() != 0 &&
-            guidance.distance_m < plane.sat_guid_guidance.popup_dist.get()) {
-            plane.gcs().send_text(MAV_SEVERITY_INFO, "SATGUID: popup");
-            state = State::POPUP;
-            int32_t target_alt_cm;
-            if (target.loc.get_alt_cm(Location::AltFrame::ABSOLUTE, target_alt_cm)) {
-                // popup top as AMSL = target AMSL + popup height above target
-                popup_top_amsl_m = target_alt_cm * 0.01f + plane.sat_guid_guidance.popup_h.get();
-            } else {
-                popup_top_amsl_m = 0.0f;
-            }
-            break;
-        }
-
-        break;
-    }
-
-    case State::POPUP:
-    {
-        // compare current AMSL to popup top AMSL
-        int32_t current_alt_cm;
-        if (plane.current_loc.get_alt_cm(Location::AltFrame::ABSOLUTE, current_alt_cm) &&
-            current_alt_cm * 0.01f >= popup_top_amsl_m) {
-            plane.gcs().send_text(MAV_SEVERITY_INFO, "SATGUID: popup complete, dive");
-            state = State::DIVE;
+            repos.active = false;
         }
         break;
     }
 
     case State::DIVE:
     {
-        // terminal guidance until impact / pass-through
+        // overshoot detection: if the line-of-sight angle to the target is
+        // steeper than the aircraft is allowed to dive, we cannot reach the
+        // target before passing above it.
+        const float pitch_min_rad = radians(plane.sat_guid_guidance.pitch_min.get());
+        const float overshoot_sf = MAX(plane.sat_guid_guidance.overshoot_sf.get(), 1.0f);
+        if (guidance.elevation_rad < pitch_min_rad / overshoot_sf) {
+            plane.gcs().send_text(MAV_SEVERITY_WARNING,
+                                  "SATGUID: overshoot detected (el=%.1f, lim=%.1f), reposition",
+                                  (double)degrees(guidance.elevation_rad),
+                                  (double)degrees(pitch_min_rad));
+            state = State::REPOSITION;
+            repos.active = false;
+            repos.turn_started = false;
+            repos.climb_complete = false;
+        }
         break;
     }
 
-    case State::IMMELMANN:
+    case State::REPOSITION:
     {
-        // run_immelmann will manage exit back to DIVE/CRUISE
+        // run_reposition manages its own exit back to DIVE
         break;
     }
 
@@ -546,17 +492,17 @@ void ModeSatGuid::run()
     case State::TRANSITION:
         run_transition();
         break;
+    case State::CLIMB:
+        run_climb();
+        break;
     case State::CRUISE:
         run_cruise();
-        break;
-    case State::POPUP:
-        run_popup();
         break;
     case State::DIVE:
         run_dive();
         break;
-    case State::IMMELMANN:
-        run_immelmann();
+    case State::REPOSITION:
+        run_reposition();
         break;
     case State::TARGET_LOSS:
         run_target_loss();
@@ -604,6 +550,11 @@ void ModeSatGuid::run_takeoff()
     output_rudder_and_steering(0.0f);
 
     quadplane.assist.output_spin_recovery();
+
+    SATGUID_DBG("TKOF cur_alt=%.1f tkof_h=%d rel_alt=%.1f",
+                (double)(plane.current_loc.alt * 0.01),
+                (int)plane.sat_guid_guidance.takeoff_h.get(),
+                (double)plane.relative_altitude);
 }
 
 void ModeSatGuid::run_transition()
@@ -620,19 +571,57 @@ void ModeSatGuid::run_transition()
     output_rudder_and_steering(0.0f);
 }
 
+void ModeSatGuid::run_climb()
+{
+    // Fixed-wing climb toward target while gaining altitude.
+    // L1 controller provides lateral guidance; pitch is held at CLMB_ANG.
+
+    float home_amsl_m = 0.0f;
+    int32_t current_alt_cm;
+    if (plane.current_loc.get_alt_cm(Location::AltFrame::ABSOLUTE, current_alt_cm)) {
+        home_amsl_m = current_alt_cm * 0.01f - plane.relative_altitude;
+    }
+
+    Location wp = target.loc;
+    wp.set_alt_cm(int32_t((home_amsl_m + climb_target_rel_m) * 100.0f),
+                  Location::AltFrame::ABSOLUTE);
+
+    set_fw_waypoint(wp);
+    plane.calc_nav_roll();
+    apply_roll_limit();
+
+    // direct pitch command for steady climb angle
+    const float pitch_cmd_rad = radians(plane.sat_guid_guidance.climb_ang.get());
+    plane.nav_pitch_cd = int32_t(degrees(pitch_cmd_rad) * 100.0f);
+    apply_pitch_limit();
+
+    Mode::run();
+
+    // full throttle for best climb
+    SRV_Channels::set_output_scaled(SRV_Channel::k_throttle, plane.aparm.throttle_max.get());
+
+    SATGUID_DBG("CLIMB dist=%.1f rel_alt=%.1f tgt=%.1f pitch=%d roll=%d",
+                (double)guidance.distance_m,
+                (double)plane.relative_altitude,
+                (double)climb_target_rel_m,
+                (int)plane.nav_pitch_cd,
+                (int)plane.nav_roll_cd);
+}
+
 void ModeSatGuid::run_cruise()
 {
-    // Use L1 controller to fly toward predicted target with random corridor offsets
+    // Use L1 controller to fly toward target with random lateral/altitude/speed corridor.
 
     // advance corridor phase (assumes run() called at ~50 Hz)
     const float freq = MAX(plane.sat_guid_guidance.course_noise_f.get(), 0.001f);
-    corridor_phase += 2.0f * M_PI * freq * 0.05f;
+    corridor_phase += 2.0f * M_PI * freq * 0.02f;
     if (corridor_phase > 2.0f * M_PI) {
         corridor_phase -= 2.0f * M_PI;
     }
 
     const float lateral_bias_m = plane.sat_guid_guidance.cruise_lat_bias.get() * sinf(corridor_phase);
     const float alt_bias_m = plane.sat_guid_guidance.cruise_alt_bias.get() * sinf(corridor_phase + M_PI_2);
+    const float spd_bias_mps = plane.sat_guid_guidance.cruise_spd_bias.get() * sinf(corridor_phase + M_PI);
 
     // base cruise altitude above home (AMSL)
     float home_amsl_m = 0.0f;
@@ -641,110 +630,159 @@ void ModeSatGuid::run_cruise()
         home_amsl_m = current_alt_cm * 0.01f - plane.relative_altitude;
     }
 
-    Location wp = predict_target(0.0f);
+    Location wp = target.loc;
     wp.offset_bearing(90.0f + degrees(guidance.bearing_rad), lateral_bias_m);
     wp.set_alt_cm(int32_t((home_amsl_m + plane.sat_guid_guidance.cruise_alt.get() + alt_bias_m) * 100.0f),
                   Location::AltFrame::ABSOLUTE);
 
-    plane.prev_WP_loc = plane.current_loc;
-    plane.next_WP_loc = wp;
-    plane.set_target_altitude_location(wp);
-
-    plane.nav_controller->update_waypoint(plane.prev_WP_loc, plane.next_WP_loc);
+    set_fw_waypoint(wp);
     plane.calc_nav_roll();
+    apply_roll_limit();
     plane.calc_nav_pitch();
+    apply_pitch_limit();  // use SatGuid pitch limits, not PTCH_LIM_MIN/MAX
 
-    // target cruise speed
-    plane.target_airspeed_cm = int32_t(plane.sat_guid_guidance.cruise_spd.get() * 100.0f);
+    // speed corridor
+    const float cruise_spd = plane.sat_guid_guidance.cruise_spd.get();
+    const float target_spd = MAX(cruise_spd + spd_bias_mps, 5.0f);
+    plane.target_airspeed_cm = int32_t(target_spd * 100.0f);
 
     Mode::run();
     plane.calc_throttle();
-}
 
-void ModeSatGuid::run_popup()
-{
-    // climb at max pitch toward popup top altitude while continuing toward target
-    Location wp = predict_target(0.0f);
-    if (popup_top_amsl_m > 0.0f) {
-        wp.set_alt_cm(int32_t(popup_top_amsl_m * 100.0f), Location::AltFrame::ABSOLUTE);
-    }
-
-    plane.prev_WP_loc = plane.current_loc;
-    plane.next_WP_loc = wp;
-    plane.set_target_altitude_location(wp);
-
-    plane.nav_controller->update_waypoint(plane.prev_WP_loc, plane.next_WP_loc);
-    plane.calc_nav_roll();
-    plane.calc_nav_pitch();
-
-    // request climb speed near TECS max climb
-    plane.target_airspeed_cm = int32_t(plane.sat_guid_guidance.cruise_spd.get() * 100.0f);
-
-    Mode::run();
-    plane.calc_throttle();
+    SATGUID_DBG("CRUISE dist=%.1f spd=%.1f yaw_err=%.1f roll=%d",
+                (double)guidance.distance_m,
+                (double)target_spd,
+                (double)degrees(guidance.bearing_error_rad),
+                (int)plane.nav_roll_cd);
 }
 
 void ModeSatGuid::run_dive()
 {
-    // terminal guidance: bank-to-turn + programmed dive angle + elevation correction
-    const float kp_roll = plane.sat_guid_guidance.kp_roll.get();
-    const float kd_roll = plane.sat_guid_guidance.kd_roll.get();
-    const float png_n = plane.sat_guid_guidance.png_n.get();
+    // Terminal guidance: L1 waypoint steering laterally, direct pitch command.
+    // Pitch follows the elevation to the target (proportional navigation) so
+    // the aircraft can hit the target precisely. It is constrained to the
+    // configured [PITCH_MIN, PITCH_MAX] range; the user should tune DIV_DST
+    // and CRALT to obtain the desired dive angle (>=25 deg when possible).
+
+    set_fw_waypoint(target.loc);
+    plane.calc_nav_roll();
+    apply_roll_limit();
+
     const float kp_pitch = plane.sat_guid_guidance.kp_pitch.get();
-
-    float roll_cmd = kp_roll * guidance.bearing_error_rad
-                   + kd_roll * guidance.bearing_rate_rad_s
-                   + png_n * guidance.bearing_rate_rad_s;
-
     const float dive_pitch_rad = radians(plane.sat_guid_guidance.dive_ang.get());
-    float pitch_cmd = dive_pitch_rad + kp_pitch * guidance.elevation_error_rad;
 
-    // altitude floor safety
-    if (plane.relative_altitude < plane.sat_guid_guidance.dive_min_alt.get() && is_positive(plane.relative_altitude)) {
-        if (pitch_cmd < radians(-5.0f)) {
-            pitch_cmd = radians(-5.0f);
-        }
-    }
+    // blend between programmed dive angle and direct target pointing
+    float pitch_cmd_rad = dive_pitch_rad + kp_pitch * (guidance.elevation_rad - dive_pitch_rad);
+
+    // elevation rate damping
+    pitch_cmd_rad += 0.1f * guidance.elevation_rate_rad_s;
+
+    plane.nav_pitch_cd = int32_t(degrees(pitch_cmd_rad) * 100.0f);
+    apply_pitch_limit();  // use SatGuid pitch limits, not PTCH_LIM_MIN/MAX
+
+    Mode::run();
 
     // full throttle for terminal pass
-    set_fw_attitude(roll_cmd, pitch_cmd, plane.aparm.throttle_max.get() * 0.01f);
+    SRV_Channels::set_output_scaled(SRV_Channel::k_throttle, plane.aparm.throttle_max.get());
 
-    Mode::run();
+    SATGUID_DBG("DIVE dist=%.1f el=%.1f pitch=%d roll=%d",
+                (double)guidance.distance_m,
+                (double)degrees(guidance.elevation_rad),
+                (int)plane.nav_pitch_cd,
+                (int)plane.nav_roll_cd);
 }
 
-void ModeSatGuid::run_immelmann()
+void ModeSatGuid::run_reposition()
 {
-    const uint32_t now = AP_HAL::millis();
-    const float dt = (now - imm.start_ms) * 0.001f;
-    const float pit_rate_rads = radians(plane.sat_guid_guidance.imm_pit_rate.get());
-    const float rol_rate_rads = radians(plane.sat_guid_guidance.imm_rol_rate.get());
+    const float yaw = ahrs.get_yaw();
 
-    if (!imm.top_reached) {
-        // Phase 1: pull up at max pitch rate, wings level
-        float pitch_cmd = dt * pit_rate_rads;
-        pitch_cmd = constrain_float(pitch_cmd, 0.0f, radians(plane.sat_guid_guidance.pitch_max.get()));
-        set_fw_attitude(0.0f, pitch_cmd, 1.0f);
-
-        // detect top (approx 90 deg inverted) or when pitch stops increasing due to limit
-        if (pitch_cmd >= radians(plane.sat_guid_guidance.pitch_max.get()) * 0.95f) {
-            imm.top_reached = true;
-            imm.start_ms = now;  // reset timer for phase 2 roll
-            imm.entry_heading_rad = ahrs.get_yaw(); // reuse as top heading
-        }
-    } else {
-        // Phase 2: roll 180 to return upright and point back toward target
-        const float roll_cmd = dt * rol_rate_rads;
-        if (roll_cmd >= M_PI) {
-            // Immelmann complete, resume dive toward target
-            state = State::DIVE;
-            imm.start_ms = 0;
-        } else {
-            // hold near-zero pitch while rolling
-            set_fw_attitude(roll_cmd, 0.0f, 1.0f);
-        }
+    if (!repos.active) {
+        repos.active = true;
+        repos.turn_started = false;
+        repos.climb_complete = false;
+        repos.start_loc = plane.current_loc;
+        repos.entry_heading_rad = yaw;
+        plane.gcs().send_text(MAV_SEVERITY_INFO, "SATGUID: reposition start");
     }
 
+    // Altitude above target (m). If we are below 100 m, climb to 200 m first
+    // before attempting the reposition manoeuvre, to avoid hitting obstacles.
+    float alt_above_target_m = 0.0f;
+    int32_t current_alt_cm = 0;
+    int32_t target_alt_cm = 0;
+    if (plane.current_loc.get_alt_cm(Location::AltFrame::ABSOLUTE, current_alt_cm) &&
+        target.loc.get_alt_cm(Location::AltFrame::ABSOLUTE, target_alt_cm)) {
+        alt_above_target_m = (current_alt_cm - target_alt_cm) * 0.01f;
+    }
+    if (alt_above_target_m < 100.0f && !repos.climb_complete) {
+        // low-altitude safety climb: wings level, pitched up at CLMB_ANG
+        plane.nav_roll_cd = 0;
+        const float pitch_cmd_rad = radians(plane.sat_guid_guidance.climb_ang.get());
+        plane.nav_pitch_cd = int32_t(degrees(pitch_cmd_rad) * 100.0f);
+        apply_pitch_limit();
+        plane.target_airspeed_cm = int32_t(plane.sat_guid_guidance.cruise_spd.get() * 100.0f);
+
+        Mode::run();
+        SRV_Channels::set_output_scaled(SRV_Channel::k_throttle, plane.aparm.throttle_max.get());
+
+        if (alt_above_target_m > 200.0f) {
+            repos.climb_complete = true;
+            plane.gcs().send_text(MAV_SEVERITY_INFO, "SATGUID: reposition climb complete, alt=%.1f", (double)alt_above_target_m);
+        }
+
+        SATGUID_DBG("REPOS_CLIMB dist=%.1f alt_above=%.1f", (double)guidance.distance_m, (double)alt_above_target_m);
+        return;
+    }
+
+    // loiter radius as the distance unit for the straight-ahead leg
+    const float loiter_radius_m = MAX(fabsf(float(plane.aparm.loiter_radius)), 30.0f);
+    const float straight_dist_m = plane.sat_guid_guidance.repos_mul.get() * loiter_radius_m;
+    const float flown_m = plane.current_loc.get_distance(repos.start_loc);
+
+    if (!repos.turn_started) {
+        // Phase 1: level flight straight ahead
+        plane.nav_roll_cd = 0;
+        plane.nav_pitch_cd = 0;
+        plane.target_airspeed_cm = int32_t(plane.sat_guid_guidance.cruise_spd.get() * 100.0f);
+
+        Mode::run();
+        plane.calc_throttle();
+
+        if (flown_m >= straight_dist_m) {
+            repos.turn_started = true;
+            plane.gcs().send_text(MAV_SEVERITY_INFO, "SATGUID: reposition turn back");
+        }
+
+        SATGUID_DBG("REPOS_S dist=%.1f flown=%.1f", (double)guidance.distance_m, (double)flown_m);
+        return;
+    }
+
+    // Phase 2: turn back toward target using L1; let TECS hold altitude
+    set_fw_waypoint(target.loc);
+    plane.calc_nav_roll();
+    apply_roll_limit();
+    plane.calc_nav_pitch();
+    apply_pitch_limit();
+    plane.target_airspeed_cm = int32_t(plane.sat_guid_guidance.cruise_spd.get() * 100.0f);
+
     Mode::run();
+    plane.calc_throttle();
+
+    // exit when roughly aligned with the target and the required dive angle is
+    // comfortably within the aircraft limit (hysteresis below the entry threshold)
+    const bool aligned = fabsf(wrap_pi(guidance.bearing_rad - yaw)) < radians(15.0f);
+    const float pitch_min_rad = radians(plane.sat_guid_guidance.pitch_min.get());
+    const float overshoot_sf = MAX(plane.sat_guid_guidance.overshoot_sf.get(), 1.0f);
+    if (aligned && guidance.elevation_rad > pitch_min_rad / (overshoot_sf * 1.3f)) {
+        plane.gcs().send_text(MAV_SEVERITY_INFO, "SATGUID: reposition complete, resume dive");
+        repos.active = false;
+        state = State::DIVE;
+    }
+
+    SATGUID_DBG("REPOS_T dist=%.1f bear_err=%.1f el=%.1f",
+                (double)guidance.distance_m,
+                (double)degrees(wrap_pi(guidance.bearing_rad - yaw)),
+                (double)degrees(guidance.elevation_rad));
 }
 
 void ModeSatGuid::run_target_loss()
