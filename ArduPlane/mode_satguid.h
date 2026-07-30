@@ -106,6 +106,9 @@ private:
         bool climb_complete;      // true after low-altitude safety climb is done
     } repos;
 
+    // true once the VTOL loiter controller has been initialised for target-loss hold
+    bool target_loss_loiter_init;
+
     // serial protocol state (Fuchong GPS frame)
     AP_HAL::UARTDriver *uart;
     bool uart_initialised;
@@ -118,6 +121,12 @@ private:
     static constexpr uint8_t FRAME_TAIL_1 = 0xAF;
     static constexpr uint8_t FRAME_TAIL_2 = 0x55;
     static constexpr uint8_t FRAME_TYPE_GPS = 0x01;
+
+    // Minimum horizontal distance required before a fixed-wing dive can be
+    // executed. If the aircraft is closer than this (e.g. directly above the
+    // target), it must reposition first to create separation. This needs to be
+    // larger than a typical fixed-wing turn radius at cruise speed.
+    static constexpr float MIN_DIVE_DISTANCE_M = 80.0f;
 
     // methods
     void init_uart();

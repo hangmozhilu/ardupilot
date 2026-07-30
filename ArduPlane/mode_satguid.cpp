@@ -28,6 +28,7 @@ ModeSatGuid::ModeSatGuid()
       corridor_phase(0.0f),
       takeoff_start_alt_cm(0),
       climb_target_rel_m(0.0f),
+      target_loss_loiter_init(false),
       uart(nullptr),
       uart_initialised(false),
       frame_idx(0),
@@ -52,6 +53,7 @@ bool ModeSatGuid::_enter()
     target = {};
     guidance = {};
     repos = {};
+    target_loss_loiter_init = false;
 
     // load parameter target immediately so the initial phase decision can plan
     if (plane.sat_guid_guidance.tgt_src.get() == 0) {
@@ -72,6 +74,19 @@ bool ModeSatGuid::_enter()
         }
     }
 
+    // Hard guard: refuse to enter if a valid target is closer than 100 m.
+    // This protects against entering SATGUID directly above or right next to
+    // the target, where fixed-wing guidance cannot work.
+    if (target_valid()) {
+        compute_guidance();
+        if (guidance.distance_m < 100.0f) {
+            plane.gcs().send_text(MAV_SEVERITY_WARNING,
+                                  "SATGUID: target too close (%.1f m), cannot enter",
+                                  (double)guidance.distance_m);
+            return false;
+        }
+    }
+
     // Determine initial phase based on current flight configuration so that
     // SATGUID can be entered from VTOL modes (QLOITER/QHOVER) or fixed-wing
     // modes (FBWA/FBWB/etc.) without requiring a fresh VTOL takeoff.
@@ -81,14 +96,24 @@ bool ModeSatGuid::_enter()
         state = State::TRANSITION;
     } else {
         // Already in fixed-wing flight: skip VTOL takeoff and transition.
-        state = State::CLIMB;
         if (target_valid()) {
-            compute_guidance();
-            select_climb_target();
+            if (guidance.distance_m < MIN_DIVE_DISTANCE_M) {
+                // Too close horizontally (e.g. directly above the target): a
+                // fixed-wing dive is impossible. Reposition first.
+                state = State::REPOSITION;
+                plane.gcs().send_text(MAV_SEVERITY_INFO,
+                                      "SATGUID: too close to target (%.1f m), reposition first",
+                                      (double)guidance.distance_m);
+            } else {
+                state = State::CLIMB;
+                select_climb_target();
+                plane.gcs().send_text(MAV_SEVERITY_INFO, "SATGUID: entered in fixed-wing, skip takeoff");
+            }
         } else {
+            state = State::CLIMB;
             climb_target_rel_m = float(plane.sat_guid_guidance.cruise_alt.get());
+            plane.gcs().send_text(MAV_SEVERITY_INFO, "SATGUID: entered in fixed-wing, skip takeoff");
         }
-        plane.gcs().send_text(MAV_SEVERITY_INFO, "SATGUID: entered in fixed-wing, skip takeoff");
     }
 
     plane.nav_roll_cd = 0;
@@ -350,7 +375,10 @@ void ModeSatGuid::select_climb_target()
     // Choose climb-out altitude. For close-range engagements, climb higher than
     // cruise altitude so the aircraft can execute a steep dive.
     if (guidance.distance_m < plane.sat_guid_guidance.close_dist.get()) {
-        const float min_dive_ht_m = guidance.distance_m * tanf(fabsf(radians(45.0f)));
+        // Enforce a minimum horizontal separation so a directly-overhead target
+        // still produces a meaningful climb height for the subsequent dive.
+        const float horizontal_m = MAX(guidance.distance_m, MIN_DIVE_DISTANCE_M);
+        const float min_dive_ht_m = horizontal_m * tanf(fabsf(radians(45.0f)));
         climb_target_rel_m = MAX(float(plane.sat_guid_guidance.cruise_alt.get()),
                                  plane.relative_altitude + min_dive_ht_m + 20.0f);
     } else {
@@ -371,6 +399,7 @@ void ModeSatGuid::update()
     if (state == State::TARGET_LOSS) {
         // target recovered, resume from cruise
         state = State::CRUISE;
+        target_loss_loiter_init = false;
     }
 
     compute_guidance();
@@ -413,6 +442,17 @@ void ModeSatGuid::update_state_machine()
     {
         // re-evaluate climb target in case target became valid after fixed-wing entry
         select_climb_target();
+        if (guidance.distance_m < MIN_DIVE_DISTANCE_M) {
+            // Too close for a fixed-wing dive; reposition to create separation.
+            plane.gcs().send_text(MAV_SEVERITY_INFO,
+                                  "SATGUID: climb too close (%.1f m), reposition",
+                                  (double)guidance.distance_m);
+            repos.active = false;
+            repos.turn_started = false;
+            repos.climb_complete = false;
+            state = State::REPOSITION;
+            break;
+        }
         if (plane.relative_altitude >= climb_target_rel_m) {
             if (guidance.distance_m < plane.sat_guid_guidance.close_dist.get()) {
                 plane.gcs().send_text(MAV_SEVERITY_INFO, "SATGUID: close range climb complete, dive");
@@ -769,11 +809,12 @@ void ModeSatGuid::run_reposition()
     plane.calc_throttle();
 
     // exit when roughly aligned with the target and the required dive angle is
-    // comfortably within the aircraft limit (hysteresis below the entry threshold)
+    // within the aircraft limit. Use a small hysteresis (1.1) below the entry
+    // threshold to avoid rapid in/out switching.
     const bool aligned = fabsf(wrap_pi(guidance.bearing_rad - yaw)) < radians(15.0f);
     const float pitch_min_rad = radians(plane.sat_guid_guidance.pitch_min.get());
     const float overshoot_sf = MAX(plane.sat_guid_guidance.overshoot_sf.get(), 1.0f);
-    if (aligned && guidance.elevation_rad > pitch_min_rad / (overshoot_sf * 1.3f)) {
+    if (aligned && guidance.elevation_rad > pitch_min_rad / (overshoot_sf * 1.1f)) {
         plane.gcs().send_text(MAV_SEVERITY_INFO, "SATGUID: reposition complete, resume dive");
         repos.active = false;
         state = State::DIVE;
@@ -787,9 +828,62 @@ void ModeSatGuid::run_reposition()
 
 void ModeSatGuid::run_target_loss()
 {
-    // wings level, maintain altitude by TECS while loss action is handled
-    plane.nav_roll_cd = 0;
-    plane.nav_pitch_cd = 0;
+#if HAL_QUADPLANE_ENABLED
+    if (quadplane.in_vtol_mode()) {
+        // VTOL: actively hold current position and altitude (like QLOITER)
+        const uint32_t now = AP_HAL::millis();
+        if (!target_loss_loiter_init || now - quadplane.last_loiter_ms > 500) {
+            loiter_nav->clear_pilot_desired_acceleration();
+            loiter_nav->init_target();
+            if (!target_loss_loiter_init) {
+                pos_control->init_z_controller();
+                target_loss_loiter_init = true;
+            }
+        }
+        quadplane.last_loiter_ms = now;
+
+        quadplane.set_desired_spool_state(AP_Motors::DesiredSpoolState::THROTTLE_UNLIMITED);
+
+        // run horizontal loiter controller
+        loiter_nav->update();
+        plane.nav_roll_cd = loiter_nav->get_roll();
+        plane.nav_pitch_cd = loiter_nav->get_pitch();
+        quadplane.assign_tilt_to_fwd_thr();
+
+        // hold current altitude
+        pos_control->set_max_speed_accel_z(
+            -quadplane.get_pilot_velocity_z_max_dn(),
+            quadplane.pilot_speed_z_max_up * 100,
+            quadplane.pilot_accel_z * 100);
+        quadplane.set_climb_rate_cms(0);
+        quadplane.run_z_controller();
+
+        // run multicopter attitude controller
+        Vector3f target_att {
+            plane.nav_roll_cd * 0.01f,
+            plane.nav_pitch_cd * 0.01f,
+            0.0f
+        };
+        attitude_control->input_euler_angle_roll_pitch_euler_rate_yaw(
+            target_att.x * 100.0f,
+            target_att.y * 100.0f,
+            target_att.z * 100.0f);
+
+        // also drive fixed-wing surfaces
+        plane.stabilize_roll();
+        plane.stabilize_pitch();
+        output_rudder_and_steering(0.0f);
+        return;
+    }
+#endif
+
+    // Fixed-wing: loiter at current location while waiting for a target
+    plane.do_loiter_at_location();
+    plane.update_loiter(0);
+    plane.calc_nav_roll();
+    apply_roll_limit();
+    plane.calc_nav_pitch();
+    apply_pitch_limit();
     plane.target_airspeed_cm = int32_t(plane.sat_guid_guidance.cruise_spd.get() * 100.0f);
     Mode::run();
     plane.calc_throttle();
