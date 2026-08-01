@@ -128,6 +128,15 @@ private:
     // larger than a typical fixed-wing turn radius at cruise speed.
     static constexpr float MIN_DIVE_DISTANCE_M = 80.0f;
 
+    // Below this distance to the target we switch from L1 waypoint steering to
+    // direct bearing pursuit, because L1 becomes unstable very close to the
+    // waypoint.
+    static constexpr float TERMINAL_DISTANCE_M = 100.0f;
+
+    // Once we are this close to the target in the dive phase we commit to the
+    // impact and no longer trigger an overshoot/reposition manoeuvre.
+    static constexpr float IMPACT_COMMIT_DISTANCE_M = 50.0f;
+
     // methods
     void init_uart();
     void read_serial();
@@ -149,6 +158,7 @@ private:
     void run_target_loss();
 
     void compute_guidance();
+    float get_alt_above_target_m() const;
     void set_fw_waypoint(const Location &wp);
     void select_climb_target();
     void apply_roll_limit();

@@ -938,6 +938,9 @@ public:
     // true if we are doing automatic navigation
     bool does_auto_navigation() const override { return true; }
 
+    // true if mode sets throttle automatically
+    bool does_auto_throttle() const override { return true; }
+
 protected:
 
     bool _enter() override;
@@ -945,51 +948,207 @@ protected:
 
 private:
 
-    // target information received from gimbal/camera
+    // ============================================================
+    // 数据结构定义
+    // ============================================================
+
+    // 目标信息：从云台/相机接收的原始数据
+    // Target information received from gimbal/camera
     struct {
-        int32_t camera_x;         // target x pixel coordinate
-        int32_t camera_y;         // target y pixel coordinate
-        int32_t gimbal_yaw_cdeg;  // gimbal yaw relative to aircraft body (0.01 deg, + = right)
-        int32_t gimbal_pitch_cdeg;// gimbal pitch relative to aircraft body (0.01 deg, + = up)
-        float confidence;         // target confidence 0..1
-        bool active;              // target valid flag
-        uint32_t last_update_ms;
+        int32_t camera_x;         // 目标x像素坐标 target x pixel coordinate
+        int32_t camera_y;         // 目标y像素坐标 target y pixel coordinate
+        int32_t gimbal_yaw_cdeg;  // 云台偏航角（相对机体，0.01度，+右）gimbal yaw relative to body
+        int32_t gimbal_pitch_cdeg;// 云台俯仰角（相对机体，0.01度，+上）gimbal pitch relative to body
+        float confidence;         // 目标置信度 0..1 target confidence
+        bool active;              // 目标有效标志 target valid flag
+        uint32_t last_update_ms;  // 最后一次收到目标的时间戳
     } target;
 
-    // guidance state
+    // 制导状态：滤波后的制导量和中间计算结果
+    // Guidance state: filtered guidance quantities and intermediate results
     struct {
-        float bearing_error_rad;
-        float bearing_rate_rad_s;
-        float elevation_error_rad;
-        float last_bearing_error_rad;
-        uint32_t last_update_ms;
-        bool target_valid;
+        float bearing_error_rad;         // 方位角误差（滤波后）filtered bearing error
+        float bearing_rate_rad_s;        // 方位角速率（滤波后）filtered bearing rate
+        float elevation_error_rad;       // 俯仰角误差（滤波后）filtered elevation error
+        float elevation_rate_rad_s;      // 俯仰角速率（滤波后）filtered elevation rate
+        float slant_range_m;             // 斜距估计值（滤波后）filtered slant range
+        uint32_t last_update_ms;         // 最后一次制导更新的时间戳
+        bool target_valid;               // 目标是否有效（滤波后）
+        bool in_terminal_phase;          // 是否处于终端制导阶段
     } guidance;
 
-    // camera/gimbal configuration (hardcoded defaults for prototype)
-    static constexpr float CAMERA_WIDTH_PX = 1920.0f;
-    static constexpr float CAMERA_HEIGHT_PX = 1080.0f;
-    static constexpr float RC_OVERRIDE_DEADZONE = 0.15f;
+    // ============================================================
+    // Alpha-Beta滤波器（稳态卡尔曼滤波器）
+    // 用于平滑和预测目标视线的角度和距离
+    // Alpha-Beta filter (steady-state Kalman filter) for smoothing
+    // and predicting target line-of-sight angles and range.
+    // ============================================================
+    struct AlphaBetaFilter {
+        float x_est;    // 状态估计值（位置/角度）position estimate
+        float v_est;    // 速度估计值（角速率/距离速率）velocity estimate
+        bool init;      // 是否已初始化 filter initialized flag
 
-    // binary frame handling
-    static constexpr uint8_t FRAME_LEN = 23;        // 2 header + 4*4 payload + 1 confidence + 1 active + 1 checksum + 2 tail
-    static constexpr uint8_t PAYLOAD_TAIL_LEN = FRAME_LEN - 2;
-    uint8_t frame_buffer[FRAME_LEN];
-    uint8_t frame_idx;
-    uint8_t parse_state;    // 0: wait header1, 1: wait header2, 2: receiving frame body
+        // 将角度归一化到 [-PI, PI]
+        // Wrap angle to [-PI, PI]
+        static float wrap_pi(float x) {
+            while (x > M_PI) { x -= 2.0f * M_PI; }
+            while (x < -M_PI) { x += 2.0f * M_PI; }
+            return x;
+        }
 
-    bool loss_action_triggered; // true when target-loss action has already been triggered
+        // 重置滤波器状态
+        // Reset filter state
+        void reset() {
+            init = false;
+            x_est = 0.0f;
+            v_est = 0.0f;
+        }
 
-    AP_HAL::UARTDriver *uart;
-    bool uart_initialised;
+        // 更新滤波器，返回滤波后的位置估计值
+        // Update filter, returns filtered position estimate
+        // meas: 测量值 measurement
+        // alpha: 位置增益 position gain
+        // beta: 速度增益 velocity gain
+        // dt: 时间步长 (s) time step
+        // circular: 是否对测量值进行角度环绕处理（用于方位角/俯仰角）
+        // circular: true for circular angles (bearing/elevation)
+        float update(float meas, float alpha, float beta, float dt, bool circular = false) {
+            // 未初始化或时间步长异常，直接初始化
+            // Not initialized or abnormal dt, initialize directly
+            if (!init || dt <= 0.0f || dt > 0.5f) {
+                x_est = meas;
+                v_est = 0.0f;
+                init = true;
+                return x_est;
+            }
+            // 预测步骤：根据上一时刻速度外推当前时刻位置
+            // Prediction: extrapolate position from previous velocity
+            const float x_pred = x_est + v_est * dt;
+            // 计算残差（测量值 - 预测值）
+            // Compute residual (measurement - prediction)
+            float residual = meas - x_pred;
+            // 对循环角度（如方位角）进行环绕处理，避免±180°跳变
+            // Wrap residual for circular angles to avoid ±180° jumps
+            if (circular) {
+                residual = wrap_pi(residual);
+            }
+            // 更新步骤：用alpha修正位置，用beta修正速度
+            // Update: correct position with alpha, velocity with beta
+            x_est = x_pred + alpha * residual;
+            if (circular) {
+                x_est = wrap_pi(x_est);
+            }
+            v_est = v_est + (beta / dt) * residual;
+            return x_est;
+        }
 
+        // 预测t_go秒后的位置（用于前馈补偿）
+        // Predict position after t_go seconds (for feedforward compensation)
+        float predict(float t_go) const {
+            return x_est + v_est * t_go;
+        }
+    };
+
+    // 三个独立的滤波器：方位角、俯仰角、斜距
+    // Three independent filters: bearing, elevation, slant range
+    AlphaBetaFilter filt_bearing;     // 方位角误差滤波器 bearing error filter
+    AlphaBetaFilter filt_elevation;   // 俯仰角误差滤波器 elevation error filter
+    AlphaBetaFilter filt_range;       // 斜距滤波器 slant range filter
+
+    // ============================================================
+    // 常量定义
+    // ============================================================
+
+    // 相机/云台配置（硬编码原型默认值，后续可改为参数）
+    // Camera/gimbal configuration (hardcoded defaults for prototype)
+    static constexpr float CAMERA_WIDTH_PX = 1920.0f;    // 相机水平像素
+    static constexpr float CAMERA_HEIGHT_PX = 1080.0f;   // 相机垂直像素
+    static constexpr float RC_OVERRIDE_DEADZONE = 0.15f; // 遥控器超控死区
+
+    // 终端制导阶段的滚转限制（度），近距离时限制滚转以防过冲
+    // Roll limit during terminal phase (deg), to prevent overshoot
+    static constexpr float TERMINAL_ROLL_LIM_DEG = 15.0f;
+
+    // 预测时间常数 (s)，用于提前修正目标运动
+    // Prediction time constant for feedforward correction of target motion
+    static constexpr float T_GO_PREDICT_S = 0.3f;
+
+    // ============================================================
+    // 串口帧协议处理
+    // ============================================================
+
+    // 二进制帧缓冲区（不含帧头，仅payload+校验+帧尾）
+    // Binary frame buffer (without header, payload+checksum+tail only)
+    static constexpr uint8_t FRAME_BODY_LEN = 21;   // 18 payload + 1 checksum + 2 tail = 21 bytes
+    uint8_t frame_buffer[FRAME_BODY_LEN];
+    uint8_t frame_idx;          // 当前帧体内字节索引
+    uint8_t parse_state;        // 解析状态：0=等待帧头1, 1=等待帧头2, 2=接收帧体
+
+    bool loss_action_triggered; // 目标丢失动作是否已触发
+
+    AP_HAL::UARTDriver *uart;   // 串口设备指针
+    bool uart_initialised;      // 串口是否已初始化
+
+    // ============================================================
+    // 方法声明
+    // ============================================================
+
+    // 串口与协议
     void init_uart();
     void read_serial();
     bool validate_frame(const uint8_t *frame) const;
     bool parse_frame(const uint8_t *frame);
-    void update_guidance();
+
+    // 目标有效性检查
     bool target_valid() const;
+
+    // 目标丢失处理
     void handle_target_loss();
+
+    // ---- 核心制导函数（优化后） ----
+
+    // 主制导更新函数：像素角→机体角→LOS→滤波→控制指令
+    // Main guidance update: pixel angles → body angles → LOS → filter → control commands
+    void update_guidance();
+
+    // 计算当前飞机高于目标的高度差 (m)
+    // Compute height above target (m)
+    float compute_height_above_target() const;
+
+    // 估计斜距：利用高度差和俯视角进行几何估算
+    // Estimate slant range using height above target and depression angle
+    float estimate_slant_range(float los_pitch_earth_rad) const;
+
+    // 计算增益缩放系数：根据斜距动态调整制导增益
+    // Compute gain scaling factor based on slant range
+    float compute_gain_scale(float slant_range_m) const;
+
+    // 计算云台杆臂补偿角速率：飞机姿态角速度在杆臂上的投影
+    // Compute gimbal lever-arm compensation angular rate
+    void compute_gimbal_compensation(float &comp_bearing_rad_s, float &comp_elevation_rad_s) const;
+
+    // 计算终端制导（纯追踪）的滚转和俯仰指令
+    // Compute terminal guidance (pure pursuit) roll and pitch commands
+    void compute_terminal_guidance(float filtered_bearing_rad,
+                                   float filtered_elevation_rad,
+                                   float filtered_range_m,
+                                   float &roll_cmd_rad,
+                                   float &pitch_cmd_rad) const;
+
+    // 计算正常制导（比例导航+增益调度）的滚转和俯仰指令
+    // Compute normal guidance (PNG + gain scheduling) roll and pitch commands
+    void compute_normal_guidance(float filtered_bearing_rad,
+                                 float filtered_bearing_rate_rad_s,
+                                 float filtered_elevation_rad,
+                                 float filtered_elevation_rate_rad_s,
+                                 float filtered_range_m,
+                                 float &roll_cmd_rad,
+                                 float &pitch_cmd_rad) const;
+
+    // 计算自适应俯冲角：根据高度差和水平距离动态计算
+    // Compute adaptive dive pitch from height above target and horizontal distance
+    float compute_adaptive_dive_pitch(float filtered_range_m,
+                                      float filtered_elevation_rad) const;
 };
 
 #include "mode_satguid.h"
