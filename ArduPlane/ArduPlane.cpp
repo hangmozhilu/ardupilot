@@ -510,6 +510,12 @@ void Plane::update_control_mode(void)
 
     update_fly_forward();
 
+#if HAL_QUADPLANE_ENABLED
+    // FUCHONGCESHI模式自动切换检查：在任意模式中持续监听云台串口，
+    // 当Object_active==0x22且置信度>=70%时自动切入
+    mode_fuchongceshi.check_auto_switch();
+#endif
+
     control_mode->update();
 }
 

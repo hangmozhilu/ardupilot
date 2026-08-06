@@ -941,6 +941,10 @@ public:
     // true if mode sets throttle automatically
     bool does_auto_throttle() const override { return true; }
 
+    // 在任意模式中持续检查串口，满足条件时自动切换到此模式
+    // Called from Plane::update_control_mode() every iteration
+    void check_auto_switch();
+
 protected:
 
     bool _enter() override;
@@ -960,7 +964,7 @@ private:
         int32_t gimbal_yaw_cdeg;  // 云台偏航角（相对机体，0.01度，+右）gimbal yaw relative to body
         int32_t gimbal_pitch_cdeg;// 云台俯仰角（相对机体，0.01度，+上）gimbal pitch relative to body
         float confidence;         // 目标置信度 0..1 target confidence
-        bool active;              // 目标有效标志 target valid flag
+        uint8_t object_active;    // 追踪模式标志：0x00=无目标, 0x11=不追踪, 其他非零=追踪
         uint32_t last_update_ms;  // 最后一次收到目标的时间戳
     } target;
 
@@ -1061,8 +1065,8 @@ private:
 
     // 相机/云台配置（硬编码原型默认值，后续可改为参数）
     // Camera/gimbal configuration (hardcoded defaults for prototype)
-    static constexpr float CAMERA_WIDTH_PX = 1920.0f;    // 相机水平像素
-    static constexpr float CAMERA_HEIGHT_PX = 1080.0f;   // 相机垂直像素
+    static constexpr float CAMERA_WIDTH_PX = 640.0f;    // 相机水平像素
+    static constexpr float CAMERA_HEIGHT_PX = 480.0f;   // 相机垂直像素
     static constexpr float RC_OVERRIDE_DEADZONE = 0.15f; // 遥控器超控死区
 
     // 终端制导阶段的滚转限制（度），近距离时限制滚转以防过冲
@@ -1072,6 +1076,13 @@ private:
     // 预测时间常数 (s)，用于提前修正目标运动
     // Prediction time constant for feedforward correction of target motion
     static constexpr float T_GO_PREDICT_S = 0.3f;
+
+    // 置信度阈值：>=0.7 且 Object_active==0x22 时自动切换到此模式
+    // Confidence threshold for auto-switch: >=0.7 and Object_active==0x22
+    static constexpr float CONFIDENCE_AUTO_SWITCH = 0.7f;
+    // 置信度阈值：<0.3 时认为目标无效，不更新制导
+    // Confidence threshold for target validity: <0.3 means target invalid
+    static constexpr float CONFIDENCE_MIN_VALID = 0.3f;
 
     // ============================================================
     // 串口帧协议处理
@@ -1101,6 +1112,8 @@ private:
 
     // 目标有效性检查
     bool target_valid() const;
+    // 自动模式切换条件检查：Object_active==0x22 && confidence>0.7
+    bool should_auto_switch() const;
 
     // 目标丢失处理
     void handle_target_loss();
@@ -1148,7 +1161,7 @@ private:
     // 计算自适应俯冲角：根据高度差和水平距离动态计算
     // Compute adaptive dive pitch from height above target and horizontal distance
     float compute_adaptive_dive_pitch(float filtered_range_m,
-                                      float filtered_elevation_rad) const;
+                                          float los_pitch_earth_rad) const;
 };
 
 #include "mode_satguid.h"

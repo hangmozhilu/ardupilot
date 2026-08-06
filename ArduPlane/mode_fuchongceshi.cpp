@@ -31,29 +31,32 @@
     5. 俯冲角自适应：atan(高度差/水平距离)，替代固定dive_pitch
     6. 滚转-偏航耦合补偿：方向舵混合，减小侧滑
     7. 云台杆臂补偿：抵消飞机姿态变化引入的虚假LOS运动
-    8. 安全保护：最低高度限制、目标丢失超时、置信度滤波
+    8. 安全保护：目标丢失超时、置信度滤波、遥控器超控
 
   ======================== 协议说明 ========================
 
-  Gimbal binary protocol (configure the gimbal/camera UART to
+  Gimbal/Camera binary protocol (configure the gimbal/camera UART to
   SERIALn_PROTOCOL = 50 (SerialProtocol_FuchongTarget)):
 
     [0xFA][0xAA][cx][cy][yaw][pitch][conf][active][XX][0xAF][0x55]
 
   Frame length: 23 bytes
     header (2)  : 0xFA, 0xAA   帧头
-    cx (4)      : int32 little-endian, 目标x像素坐标, 0..1920
-    cy (4)      : int32 little-endian, 目标y像素坐标, 0..1080
-    yaw (4)     : int32 little-endian, 云台相对飞机的偏航角度, 0.01度, + = right
-    pitch (4)   : int32 little-endian, 云台相对飞机的俯仰角度, 0.01度, + = up
-    conf (1)    : uint8, 目标置信度, 0..100 (0%..100%)
-    active (1)  : uint8, 目标是否有效, 1 if target valid
+    cx (4)      : int32 little-endian, 目标x像素坐标(0~640), Camera_x
+    cy (4)      : int32 little-endian, 目标y像素坐标(0~320), Camera_y
+    yaw (4)     : int32 little-endian, 云台偏航角, 0.01度, +=右, Gimbal_y
+    pitch (4)   : int32 little-endian, 云台俯仰角, 0.01度, +=上, Gimbal_x
+    conf (1)    : uint8, 目标置信度, 0~100, Object_confidence
+    active (1)  : uint8, 追踪模式: 0x00=无目标, 0x11=不追踪, 其他非零=追踪, Object_active
     XX (1)      : XOR of all bytes between header and tail (payload bytes)
     tail (2)    : 0xAF, 0x55   帧尾
 
+  自动切换：Object_active为非零且非0x11 && Object_confidence>=70% 时，
+  飞控自动从任意模式切换到 FUCHONGCESHI 模式。
+
   ======================== 坐标系说明 ========================
 
-  像素坐标系  : x向右(0→1920), y向下(0→1080)
+  像素坐标系  : x向右(0→640), y向下(0→480)
   归一化像素  : x∈[-1,1]右正, y∈[-1,1]上正
   机体坐标系  : X向前, Y向右, Z向下
   云台框架角  : 相对机体, 偏航右正, 俯仰上正
@@ -113,7 +116,7 @@ bool ModeFuchongceshi::_enter()
     target.gimbal_yaw_cdeg = 0;
     target.gimbal_pitch_cdeg = 0;
     target.confidence = 0;
-    target.active = false;
+    target.object_active = 0;
     target.last_update_ms = 0;
 
     // 重置制导状态（滤波后的数据）
@@ -210,22 +213,27 @@ bool ModeFuchongceshi::parse_frame(const uint8_t *frame)
 {
     // 解析各字段（小端序）
     // Parse all fields (little-endian)
-    const int32_t cx   = int32_from_le(frame + 0);  // 目标x像素坐标, 0..1920
-    const int32_t cy   = int32_from_le(frame + 4);  // 目标y像素坐标, 0..1080
-    const int32_t gy   = int32_from_le(frame + 8);  // 云台偏航角, 0.01度, +右
-    const int32_t gp   = int32_from_le(frame + 12); // 云台俯仰角, 0.01度, +上
-    const uint8_t conf = frame[16];  // 目标置信度, 0..100
-    const uint8_t active = frame[17]; // 目标有效标志, 1=有效
+    const int32_t cx   = int32_from_le(frame + 0);  // 目标x像素坐标 Camera_x, 0..640
+    const int32_t cy   = int32_from_le(frame + 4);  // 目标y像素坐标 Camera_y, 0..320
+    const int32_t gy   = int32_from_le(frame + 8);  // 云台偏航角 Gimbal_y, 0.01度, +右
+    const int32_t gp   = int32_from_le(frame + 12); // 云台俯仰角 Gimbal_x, 0.01度, +上
+    const uint8_t conf = frame[16];  // 目标置信度 Object_confidence, 0..100
+    const uint8_t active = frame[17]; // 追踪模式 Object_active: 0x11=不追踪, 0x22=追踪
 
-    // 仅在目标首次激活或调试需要时打印，避免GCS消息泛滥
-    // Print sparingly to avoid GCS message flooding
+    // 同步打印像素偏差与飞机姿态角，方便在Mission Planner中调试制导效果
+    // Print pixel deviation and aircraft attitude together for debugging in Mission Planner
     static uint32_t last_print_ms = 0;
     const uint32_t now = AP_HAL::millis();
-    if (now - last_print_ms > 1000) {
+    if (now - last_print_ms > 200) {
         last_print_ms = now;
-        plane.gcs().send_text(MAV_SEVERITY_DEBUG,
-                              "FUCHONGCESHI: cx=%d cy=%d conf=%d active=%d",
-                              (int)cx, (int)cy, (int)conf, (int)active);
+        const float roll_deg  = degrees(ahrs.get_roll());
+        const float pitch_deg = degrees(ahrs.get_pitch());
+        const float yaw_deg   = degrees(ahrs.get_yaw());
+        plane.gcs().send_text(MAV_SEVERITY_INFO,
+                              "FUCHONGCESHI: cx=%d cy=%d gym=%d gpm=%d conf=%d act=0x%02X "
+                              "roll=%.1f pitch=%.1f yaw=%.1f",
+                              (int)cx, (int)cy, (int)gy, (int)gp, (int)conf, (int)active,
+                              (double)roll_deg, (double)pitch_deg, (double)yaw_deg);
     }
 
     // 存储原始目标数据
@@ -235,7 +243,7 @@ bool ModeFuchongceshi::parse_frame(const uint8_t *frame)
     target.gimbal_yaw_cdeg   = gy;
     target.gimbal_pitch_cdeg = gp;
     target.confidence = conf * 0.01f;  // 0..100 → 0.0..1.0
-    target.active = (active != 0);
+    target.object_active = active;
     return true;
 }
 
@@ -308,24 +316,85 @@ void ModeFuchongceshi::read_serial()
 }
 
 // ============================================================
-// 检查原始目标是否有效
-// 条件：目标激活标志为真、置信度≥30%、未超时
+// 在任意模式中持续检查串口，满足条件时自动切换到此模式
+// 由 Plane::update_control_mode() 每帧调用。
+// 条件：Object_active==0x22 && 置信度>=70%
+// ============================================================
+void ModeFuchongceshi::check_auto_switch()
+{
+    // 已在FUCHONGCESHI模式中，无需切换
+    // Already in FUCHONGCESHI mode, no need to switch
+    if (plane.control_mode == &plane.mode_fuchongceshi) {
+        return;
+    }
+
+    // 懒初始化串口：首次调用时初始化UART
+    // Lazy init UART on first call
+    init_uart();
+
+    if (uart == nullptr) {
+        return;  // 无可用串口 No UART available
+    }
+
+    // 读取串口数据并解析帧
+    // Read serial data and parse frames
+    read_serial();
+
+    // 检查是否满足自动切换条件
+    // Check if auto-switch conditions are met
+    if (should_auto_switch()) {
+        plane.gcs().send_text(MAV_SEVERITY_INFO,
+                              "FUCHONGCESHI: auto-switch triggered (conf=%.0f%%, active=0x%02X)",
+                              (double)(target.confidence * 100.0f), target.object_active);
+        plane.set_mode(plane.mode_fuchongceshi, ModeReason::GCS_COMMAND);
+    }
+}
+
+// ============================================================
+// 检查原始目标是否有效（用于模式内制导更新）
+// 条件：Object_active==0x22、置信度≥30%、未超时
+// 注意：与should_auto_switch()的区别在于置信度阈值更低(30% vs 70%)，
+// 因为一旦进入模式后，即使置信度下降也应继续追踪。
 // ============================================================
 bool ModeFuchongceshi::target_valid() const
 {
-    // 目标未激活
-    // Target not active
-    if (!target.active) {
+    // 追踪模式标志必须为非零（AI模块检测到目标）
+    // object_active==0x00 表示无目标，==0x11 表示不追踪，其他非零值均视为有效
+    // Object_active must be non-zero (AI module detected a target)
+    // 0x00=no target, 0x11=detected but not tracking, others=active tracking
+    if (target.object_active == 0x00 || target.object_active == 0x11) {
         return false;
     }
-    // 置信度低于阈值（30%），认为检测不可靠
+    // 置信度低于最小阈值（30%），认为检测不可靠
     // Confidence too low (< 30%), detection unreliable
-    if (target.confidence < 0.3f) {
+    if (target.confidence < CONFIDENCE_MIN_VALID) {
         return false;
     }
     // 数据超时：超过GA_TOUT_MS未收到新数据
     // Data timeout: no new data for longer than GA_TOUT_MS
     if (AP_HAL::millis() - target.last_update_ms > uint32_t(plane.ga_guidance.timeout_ms.get())) {
+        return false;
+    }
+    return true;
+}
+
+// ============================================================
+// 检查是否满足自动切换到此模式的条件
+// 条件：Object_active==0x22 && 置信度>=70%
+// 在任意飞行模式中，read_serial()持续检查此条件。
+// ============================================================
+bool ModeFuchongceshi::should_auto_switch() const
+{
+    // 追踪模式标志必须为非零且非0x11（AI模块主动请求追踪）
+    // object_active==0x00=无目标, 0x11=识别但明确不追踪
+    // 0x01/0x22等其他非零值均视为追踪请求
+    // Object_active must be non-zero and not 0x11 (AI module actively tracking)
+    if (target.object_active == 0x00 || target.object_active == 0x11) {
+        return false;
+    }
+    // 置信度必须≥70%，减少误触发
+    // Confidence must be ≥70% to reduce false triggers
+    if (target.confidence < CONFIDENCE_AUTO_SWITCH) {
         return false;
     }
     return true;
@@ -570,18 +639,19 @@ void ModeFuchongceshi::compute_terminal_guidance(
     // Terminal phase uses smaller roll P gain
     const float term_kp_roll = 0.5f;  // 纯追踪滚转增益 pure pursuit roll gain
 
-    // 滚转指令 = 增益 × 方位角误差，限制在终端滚转限制内
-    // Roll command = gain × bearing error, clamped to terminal roll limit
+    // 滚转指令 = 增益 × 方位角误差
+    // Roll command = gain × bearing error
     roll_cmd_rad = term_kp_roll * filtered_bearing_rad;
     const float term_roll_lim_rad = radians(TERMINAL_ROLL_LIM_DEG);
     roll_cmd_rad = constrain_float(roll_cmd_rad, -term_roll_lim_rad, term_roll_lim_rad);
 
     // 俯仰指令：使用自适应俯冲角，不做额外修正
     // Pitch command: use adaptive dive pitch, no additional correction
-    // 自适应俯冲角 = atan(高度差 / 水平距离)
-    // adaptive_dive_pitch = atan(height_above_target / horizontal_dist)
+    // 传入地轴LOS俯仰角（体轴LOS + 飞机俯仰角），确保几何计算正确
+    // Pass earth-frame LOS elevation (body-frame + aircraft pitch)
+    const float los_pitch_earth_rad = filtered_elevation_rad + ahrs.get_pitch();
     const float adaptive_dive_rad = compute_adaptive_dive_pitch(
-        filtered_range_m, filtered_elevation_rad);
+        filtered_range_m, los_pitch_earth_rad);
 
     pitch_cmd_rad = adaptive_dive_rad;
 }
@@ -590,7 +660,13 @@ void ModeFuchongceshi::compute_terminal_guidance(
 // 计算自适应俯冲角
 // 根据高度差和水平距离动态计算最优俯冲角，替代固定dive_pitch。
 //
+// 参数：
+//   filtered_range_m: 滤波后的斜距 (m)
+//   los_pitch_earth_rad: 地轴LOS俯仰角 (rad)，体轴LOS + 飞机俯仰角
+//                        正值=目标在地平线上方，负值=目标在地平线下方
+//
 // 计算方法：
+//   俯视角 = -los_pitch_earth_rad（地轴，正值=向下看）
 //   水平距离 = 斜距 × cos(俯视角)
 //   自适应俯冲角 = atan2(-高度差, 水平距离)
 //
@@ -598,15 +674,15 @@ void ModeFuchongceshi::compute_terminal_guidance(
 // ============================================================
 float ModeFuchongceshi::compute_adaptive_dive_pitch(
     float filtered_range_m,
-    float filtered_elevation_rad) const
+    float los_pitch_earth_rad) const
 {
     // 获取高于目标的高度差
     // Get height above target
     const float height_above_target_m = compute_height_above_target();
 
-    // 俯视角（地轴）：正值=向上看，负值=向下看
-    // Depression angle (earth frame): positive = looking up, negative = looking down
-    const float depression_angle_rad = -filtered_elevation_rad;
+    // 俯视角（地轴）：正值=向下看，负值=向上看
+    // Depression angle (earth frame): positive = looking down, negative = looking up
+    const float depression_angle_rad = -los_pitch_earth_rad;
 
     // 水平距离 = 斜距 × cos(俯视角)
     // Horizontal distance = slant_range × cos(depression_angle)
@@ -662,7 +738,6 @@ void ModeFuchongceshi::compute_normal_guidance(
     const float kp_roll  = plane.ga_guidance.kp_roll.get();
     const float kd_roll  = plane.ga_guidance.kd_roll.get();
     const float png_n    = plane.ga_guidance.png_n.get();
-    const float kp_pitch = plane.ga_guidance.kp_pitch.get();
 
     // 计算增益缩放系数（根据斜距动态调整）
     // Compute gain scaling factor (dynamic based on slant range)
@@ -674,23 +749,40 @@ void ModeFuchongceshi::compute_normal_guidance(
     // Proportional term: larger angle error → larger roll
     // 阻尼项：抑制滚转振荡
     // Damping term: suppress roll oscillation
-    // PNG项：比例导航，超前跟踪目标运动
-    // PNG term: proportional navigation, leads target motion
+    // PNG项：比例导航，超前跟踪目标运动（仅使用真实目标角速率）
+    // PNG term: proportional navigation, leads target motion (uses true target rate only)
+
+    // 从bearing_rate中减去飞机自身偏航角速率，避免飞机自身旋转污染PNG项
+    // 飞机右转时gyro.z>0，目标在画面中左移bearing_rate<0
+    // 关系：true_bearing_rate = bearing_rate + gyro.z
+    // Subtract aircraft yaw rate from bearing_rate to avoid self-rotation
+    // contaminating the PNG term. Aircraft right turn (gyro.z>0) causes target
+    // to move left in image (bearing_rate<0), so true = bearing_rate + gyro.z
+    const float true_bearing_rate = filtered_bearing_rate_rad_s + ahrs.get_gyro().z;
+
+    // 滚转指令（正常PNG制导）
+    // 比例项：方位角误差越大，滚转越大
+    // 阻尼+PNG项：使用补偿后的真实角速率（已减去飞机自身旋转）
+    // Roll command (normal PNG guidance)
     roll_cmd_rad = gain_scale * (kp_roll * filtered_bearing_rad
-                               + kd_roll * filtered_bearing_rate_rad_s
-                               + png_n   * filtered_bearing_rate_rad_s);
+                               + kd_roll * true_bearing_rate
+                               + png_n   * true_bearing_rate);
 
     // ---- 俯仰通道（俯仰制导） ----
     // Pitch channel (elevation guidance)
     // 自适应俯冲基线：根据几何关系计算最优俯冲角
     // Adaptive dive baseline: compute optimal dive angle from geometry
+    // 地轴LOS俯仰角 = 机体LOS俯仰角 + 飞机俯仰角
+    // Earth-frame LOS elevation = body-frame LOS + aircraft pitch
+    const float los_pitch_earth_rad = filtered_elevation_rad + ahrs.get_pitch();
     const float adaptive_dive_rad = compute_adaptive_dive_pitch(
-        filtered_range_m, filtered_elevation_rad);
+        filtered_range_m, los_pitch_earth_rad);
 
-    // 俯仰指令 = 自适应俯冲基线 + 增益缩放 * 俯仰误差修正
-    // Pitch command = adaptive dive baseline + gain_scaled * elevation correction
-    pitch_cmd_rad = adaptive_dive_rad
-                  + gain_scale * kp_pitch * filtered_elevation_rad;
+    // 俯仰指令 = 自适应俯冲基线（几何基准，直接使用）
+    // 不再叠加 filtered_elevation_rad，避免与 adaptive_dive 双重计数导致抬头
+    // Pitch command = adaptive dive baseline only (geometric reference)
+    // No longer adds kp_pitch * filtered_elevation_rad to avoid double-counting
+    pitch_cmd_rad = adaptive_dive_rad;
 }
 
 // ============================================================
@@ -703,7 +795,7 @@ void ModeFuchongceshi::compute_normal_guidance(
 //   5. Alpha-Beta滤波器平滑+预测
 //   6. 杆臂补偿修正
 //   7. 分段制导（正常PNG 或 终端纯追踪）
-//   8. 姿态限幅 + 最低高度保护
+//   8. 姿态限幅
 //   9. 遥控器超控检查
 //   10. 方向舵耦合补偿
 // ============================================================
@@ -725,10 +817,10 @@ void ModeFuchongceshi::update_guidance()
 
     // ---- 第2步：像素坐标归一化到 [-1, 1] ----
     // Step 2: normalize pixel coordinates to [-1, 1]
-    // x: 0→1920 映射到 -1→1（中心为0）
-    // y: 0→1080 映射到 1→-1（像素y向下，归一化y向上为正）
-    const float nx = 2.0f * (target.camera_x - CAMERA_WIDTH_PX * 0.5f) / CAMERA_WIDTH_PX;
-    const float ny = -2.0f * (target.camera_y - CAMERA_HEIGHT_PX * 0.5f) / CAMERA_HEIGHT_PX;
+    // x: 0→640 映射到 -1→1（中心为0）
+    // y: 0→320 映射到 1→-1（像素y向下，归一化y向上为正）
+    const float nx = target.camera_x / (CAMERA_WIDTH_PX * 0.5f);
+    const float ny = target.camera_y / (CAMERA_HEIGHT_PX * 0.5f);
 
     // ---- 第3步：图像去旋转（消除飞机滚转对像素坐标的影响） ----
     // Step 3: deskew image rotation due to aircraft roll
@@ -863,18 +955,8 @@ void ModeFuchongceshi::update_guidance()
     const float pitch_max_rad = radians(plane.ga_guidance.pitch_max.get());
     pitch_cmd_rad = constrain_float(pitch_cmd_rad, pitch_min_rad, pitch_max_rad);
 
-    // ---- 第12步：最低高度安全保护 ----
-    // Step 12: minimum altitude safety protection
-    // 低于安全高度时，限制俯冲角不超过-5度，防止撞地
-    // Below safety altitude, limit dive pitch to -5 deg to prevent ground impact
-    if (plane.relative_altitude < plane.ga_guidance.min_alt.get() && is_positive(plane.relative_altitude)) {
-        if (pitch_cmd_rad < radians(-5.0f)) {
-            pitch_cmd_rad = radians(-5.0f);
-        }
-    }
-
-    // ---- 第13步：遥控器手动超控检测 ----
-    // Step 13: manual RC override detection
+    // ---- 第12步：遥控器手动超控检测 ----
+    // Step 12: manual RC override detection
     // 当飞行员操作摇杆超过死区时，切换为手动控制，用于紧急避险
     // When pilot moves sticks beyond deadzone, switch to manual control for emergency
     const float roll_stick = plane.channel_roll->norm_input_dz();
@@ -897,8 +979,8 @@ void ModeFuchongceshi::update_guidance()
         return;  // 遥控器超控时，不执行自动制导指令
     }
 
-    // ---- 第14步：输出最终姿态指令 ----
-    // Step 14: output final attitude commands
+    // ---- 第13步：输出最终姿态指令 ----
+    // Step 13: output final attitude commands
     // 转换为厘度（centidegrees）格式，ArduPilot控制回路使用此单位
     // Convert to centidegrees format used by ArduPilot control loops
     plane.nav_roll_cd = int32_t(degrees(roll_cmd_rad) * 100.0f);

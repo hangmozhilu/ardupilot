@@ -13,8 +13,8 @@ from pymavlink import mavutil
 # 用户设置：目标 GPS 坐标
 # 改成 RealFlight 场景里你想撞击的位置
 # -------------------------------
-TARGET_LAT = 29.7490649      # 目标纬度
-TARGET_LON = 119.6405983    # 目标经度
+TARGET_LAT = 29.8070610      # 目标纬度
+TARGET_LON = 119.6731281    # 目标经度
 TARGET_ALT = 25           # 目标海拔高度（m，AMSL）
 
 # 相机参数
@@ -73,11 +73,13 @@ def ned_to_pixel(n, e, d, roll, pitch, yaw):
     bearing = math.atan2(y, x)
     elev = math.atan2(-z, math.hypot(x, y))
 
-    # 3. 线性映射到归一化像素坐标，与飞控 FOV 模型保持一致
+    # 3. 使用 tan 映射到归一化像素坐标，与飞控 FOV 模型保持一致
+    # 飞控端：pixel_yaw = atan(nx_level * tan(hfov/2))
+    # 因此逆变换：nx_level = tan(bearing) / tan(hfov/2)
     hfov = math.radians(HFOV_DEG)
     vfov = math.radians(VFOV_DEG)
-    nx_level = bearing / (hfov * 0.5)
-    ny_level = elev / (vfov * 0.5)
+    nx_level = math.tan(bearing) / math.tan(hfov * 0.5)
+    ny_level = math.tan(elev) / math.tan(vfov * 0.5)
 
     # 4. 按机体滚转预旋转，模拟机体固定相机
     cr, sr = math.cos(roll), math.sin(roll)
