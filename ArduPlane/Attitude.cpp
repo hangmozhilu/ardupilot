@@ -267,7 +267,7 @@ void Plane::stabilize_stick_mixing_fbw()
         control_mode == &mode_fbwb ||
         control_mode == &mode_cruise ||
 #if HAL_QUADPLANE_ENABLED
-        control_mode == &mode_fuchongceshi ||
+        control_mode == &mode_img_guide ||
         control_mode == &mode_satguid ||
         control_mode == &mode_qstabilize ||
         control_mode == &mode_qhover ||

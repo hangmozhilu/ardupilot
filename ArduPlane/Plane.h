@@ -175,7 +175,7 @@ public:
     friend class ModeTakeoff;
     friend class ModeThermal;
     friend class ModeLoiterAltQLand;
-    friend class ModeFuchongceshi;
+    friend class ModeImgGuide;
     friend class ModeSatGuid;
 
 #if AP_EXTERNAL_CONTROL_ENABLED
@@ -330,7 +330,7 @@ private:
     ModeQRTL mode_qrtl;
     ModeQAcro mode_qacro;
     ModeLoiterAltQLand mode_loiter_qland;
-    ModeFuchongceshi mode_fuchongceshi;
+    ModeImgGuide mode_img_guide;
     ModeSatGuid mode_satguid;
 #if QAUTOTUNE_ENABLED
     ModeQAutotune mode_qautotune;

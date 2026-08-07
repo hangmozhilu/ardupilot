@@ -92,8 +92,8 @@ Mode *Plane::mode_from_mode_num(const enum Mode::Number num)
     case Mode::Number::LOITER_ALT_QLAND:
         ret = &mode_loiter_qland;
         break;
-    case Mode::Number::FUCHONGCESHI:
-        ret = &mode_fuchongceshi;
+    case Mode::Number::IMGGUIDE:
+        ret = &mode_img_guide;
         break;
     case Mode::Number::SATGUID:
         ret = &mode_satguid;

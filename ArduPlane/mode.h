@@ -62,7 +62,7 @@ public:
         THERMAL       = 24,
 #if HAL_QUADPLANE_ENABLED
         LOITER_ALT_QLAND = 25,
-        FUCHONGCESHI     = 26,
+        IMGGUIDE          = 26,
         SATGUID          = 27,
 #endif
     };
@@ -921,15 +921,15 @@ protected:
   Tailless tailsitter fixed-wing mode that tracks a ground target from a
   gimbal camera and dives through the target center at maximum speed.
 */
-class ModeFuchongceshi : public Mode
+class ModeImgGuide : public Mode
 {
 public:
 
-    ModeFuchongceshi();
+    ModeImgGuide();
 
-    Number mode_number() const override { return Number::FUCHONGCESHI; }
-    const char *name() const override { return "FUCHONGCESHI"; }
-    const char *name4() const override { return "FUCH"; }
+    Number mode_number() const override { return Number::IMGGUIDE; }
+    const char *name() const override { return "IMGGUIDE"; }
+    const char *name4() const override { return "IMGG"; }
 
     // methods that affect movement of the vehicle in this mode
     void update() override;
@@ -975,7 +975,6 @@ private:
         float bearing_rate_rad_s;        // 方位角速率（滤波后）filtered bearing rate
         float elevation_error_rad;       // 俯仰角误差（滤波后）filtered elevation error
         float elevation_rate_rad_s;      // 俯仰角速率（滤波后）filtered elevation rate
-        float slant_range_m;             // 斜距估计值（滤波后）filtered slant range
         uint32_t last_update_ms;         // 最后一次制导更新的时间戳
         bool target_valid;               // 目标是否有效（滤波后）
         bool in_terminal_phase;          // 是否处于终端制导阶段
@@ -983,9 +982,9 @@ private:
 
     // ============================================================
     // Alpha-Beta滤波器（稳态卡尔曼滤波器）
-    // 用于平滑和预测目标视线的角度和距离
+    // 用于平滑和预测目标视线的角度
     // Alpha-Beta filter (steady-state Kalman filter) for smoothing
-    // and predicting target line-of-sight angles and range.
+    // and predicting target line-of-sight angles.
     // ============================================================
     struct AlphaBetaFilter {
         float x_est;    // 状态估计值（位置/角度）position estimate
@@ -1048,16 +1047,20 @@ private:
 
         // 预测t_go秒后的位置（用于前馈补偿）
         // Predict position after t_go seconds (for feedforward compensation)
-        float predict(float t_go) const {
-            return x_est + v_est * t_go;
+        // circular: 是否对预测结果进行角度环绕处理（用于方位角/俯仰角）
+        float predict(float t_go, bool circular = false) const {
+            float result = x_est + v_est * t_go;
+            if (circular) {
+                result = wrap_pi(result);
+            }
+            return result;
         }
     };
 
-    // 三个独立的滤波器：方位角、俯仰角、斜距
-    // Three independent filters: bearing, elevation, slant range
+    // 两个独立的滤波器：方位角、俯仰角
+    // Two independent filters: bearing, elevation
     AlphaBetaFilter filt_bearing;     // 方位角误差滤波器 bearing error filter
     AlphaBetaFilter filt_elevation;   // 俯仰角误差滤波器 elevation error filter
-    AlphaBetaFilter filt_range;       // 斜距滤波器 slant range filter
 
     // ============================================================
     // 常量定义
@@ -1072,6 +1075,16 @@ private:
     // 终端制导阶段的滚转限制（度），近距离时限制滚转以防过冲
     // Roll limit during terminal phase (deg), to prevent overshoot
     static constexpr float TERMINAL_ROLL_LIM_DEG = 15.0f;
+
+    // 滚转-俯仰解耦：目标高于/低于机头超过此角度时，开始降低滚转指令
+    // 大滚转角下升力矢量倾斜，俯仰舵效衰减，必须先改平才能有效爬升/俯冲
+    // Roll-pitch decoupling: when elevation error exceeds this, reduce roll
+    // to allow effective climb/dive (tilted lift vector at high roll angles)
+    static constexpr float PITCH_PRIORITY_REF_DEG = 20.0f;
+    // 俯仰优先级最大滚转衰减比例（0.0~1.0）
+    // 0.7 = 当俯仰误差达到PITCH_PRIORITY_REF_DEG时，滚转衰减70%
+    // Maximum roll derate fraction when pitch priority is 1.0
+    static constexpr float PITCH_PRIORITY_ROLL_DERATE = 0.7f;
 
     // 预测时间常数 (s)，用于提前修正目标运动
     // Prediction time constant for feedforward correction of target motion
@@ -1118,51 +1131,35 @@ private:
     // 目标丢失处理
     void handle_target_loss();
 
-    // ---- 核心制导函数（优化后） ----
+    // ---- 核心制导函数（LOS角度驱动，无高度/距离依赖） ----
 
     // 主制导更新函数：像素角→机体角→LOS→滤波→控制指令
     // Main guidance update: pixel angles → body angles → LOS → filter → control commands
     void update_guidance();
 
-    // 计算当前飞机高于目标的高度差 (m)
-    // Compute height above target (m)
-    float compute_height_above_target() const;
-
-    // 估计斜距：利用高度差和俯视角进行几何估算
-    // Estimate slant range using height above target and depression angle
-    float estimate_slant_range(float los_pitch_earth_rad) const;
-
-    // 计算增益缩放系数：根据斜距动态调整制导增益
-    // Compute gain scaling factor based on slant range
-    float compute_gain_scale(float slant_range_m) const;
+    // 计算连续增益缩放系数：基于LOS方位误差和方位角速率
+    // 误差大→增益大（快速对准），角速率大→增益小（接近目标，避免振荡）
+    // Compute continuous gain scale from LOS bearing error and rate
+    float compute_continuous_gain_scale(float bearing_error_rad, float bearing_rate_rad_s) const;
 
     // 计算云台杆臂补偿角速率：飞机姿态角速度在杆臂上的投影
     // Compute gimbal lever-arm compensation angular rate
     void compute_gimbal_compensation(float &comp_bearing_rad_s, float &comp_elevation_rad_s) const;
 
-    // 计算终端制导（纯追踪）的滚转和俯仰指令
-    // Compute terminal guidance (pure pursuit) roll and pitch commands
-    void compute_terminal_guidance(float filtered_bearing_rad,
+    // 计算控制指令（连续增益调度，统一处理正常和终端阶段）
+    // Compute control commands with continuous gain scheduling
+    void compute_guidance_commands(float filtered_bearing_rad,
+                                   float filtered_bearing_rate_rad_s,
                                    float filtered_elevation_rad,
-                                   float filtered_range_m,
+                                   float filtered_elevation_rate_rad_s,
+                                   float gain_scale,
+                                   bool in_terminal,
+                                   float v_north, float v_east, float v_down,
+                                   float nx, float ny,
                                    float &roll_cmd_rad,
                                    float &pitch_cmd_rad) const;
 
-    // 计算正常制导（比例导航+增益调度）的滚转和俯仰指令
-    // Compute normal guidance (PNG + gain scheduling) roll and pitch commands
-    void compute_normal_guidance(float filtered_bearing_rad,
-                                 float filtered_bearing_rate_rad_s,
-                                 float filtered_elevation_rad,
-                                 float filtered_elevation_rate_rad_s,
-                                 float filtered_range_m,
-                                 float &roll_cmd_rad,
-                                 float &pitch_cmd_rad) const;
-
-    // 计算自适应俯冲角：根据高度差和水平距离动态计算
-    // Compute adaptive dive pitch from height above target and horizontal distance
-    float compute_adaptive_dive_pitch(float filtered_range_m,
-                                          float los_pitch_earth_rad) const;
-};
+    };
 
 #include "mode_satguid.h"
 

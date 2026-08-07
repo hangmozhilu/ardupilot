@@ -1,0 +1,23 @@
+﻿Setting top to                           : /cygdrive/d/APM/ardupilot 
+Setting out to                           : /cygdrive/d/APM/ardupilot/build 
+Autoconfiguration                        : enabled 
+Checking for program 'python'            : /usr/bin/python3 
+Checking for python version >= 3.6.9     : 3.9.16 
+Setting board to                         : sitl 
+Using toolchain                          : native 
+Checking for 'g++' (C++ compiler)        : /usr/bin/g++ 
+Checking for 'gcc' (C compiler)          : /usr/bin/gcc 
+Checking for c flags '-MMD'              : no 
+Checking for cxx flags '-MMD'            : no 
+CXX Compiler                             : g++ 11.5.0 
+Checking for need to link with librt     : necessary 
+Checking for library rt                  : not found 
+C:\cygwin64\bin\bash.exe : The configuration failed
+At C:\Users\WF\AppData\Local\Temp\trae-agent-toolhost\jobs\job-ea4d30193a4e42539adb7d6e17ab2d4a\command.ps1:15 char:767
+3
++ ... pgrep\bin'; C:\cygwin64\bin\bash.exe --login -c "cd /cygdrive/d/APM/a ...
++                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (The configuration failed:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+(complete log in /cygdrive/d/APM/ardupilot/build/config.log)

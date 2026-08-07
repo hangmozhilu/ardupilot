@@ -17,29 +17,13 @@ const AP_Param::GroupInfo GA_Guidance::var_info[] = {
     // @User: Standard
     AP_GROUPINFO("VFOV", 1, GA_Guidance, vfov, 45.0f),
 
-    // @Param: DIVE_PITCH
-    // @DisplayName: Programmed dive pitch
-    // @Description: Base pitch command used to dive toward the target
-    // @Units: deg
-    // @Range: -60 0
-    // @User: Standard
-    AP_GROUPINFO("DIVE_PITCH", 2, GA_Guidance, dive_pitch, -18.0f),
-
-    // @Param: MIN_ALT
-    // @DisplayName: Minimum altitude for dive safety
-    // @Description: Below this altitude the dive pitch is limited to -5 deg
-    // @Units: m
-    // @Range: 0 500
-    // @User: Standard
-    AP_GROUPINFO("MIN_ALT", 3, GA_Guidance, min_alt, 30),
-
     // @Param: TOUT_MS
     // @DisplayName: Target loss timeout
     // @Description: Time without valid target before triggering GA_LOSS_ACT
     // @Units: ms
     // @Range: 100 5000
     // @User: Standard
-    AP_GROUPINFO("TOUT_MS", 4, GA_Guidance, timeout_ms, 500),
+    AP_GROUPINFO("TOUT_MS", 2, GA_Guidance, timeout_ms, 500),
 
     // @Param: ROLL_LIM
     // @DisplayName: Roll limit
@@ -47,7 +31,7 @@ const AP_Param::GroupInfo GA_Guidance::var_info[] = {
     // @Units: deg
     // @Range: 5 80
     // @User: Standard
-    AP_GROUPINFO("ROLL_LIM", 5, GA_Guidance, roll_lim, 35.0f),
+    AP_GROUPINFO("ROLL_LIM", 3, GA_Guidance, roll_lim, 35.0f),
 
     // @Param: PITCH_MIN
     // @DisplayName: Minimum pitch
@@ -55,7 +39,7 @@ const AP_Param::GroupInfo GA_Guidance::var_info[] = {
     // @Units: deg
     // @Range: -90 0
     // @User: Standard
-    AP_GROUPINFO("PITCH_MIN", 6, GA_Guidance, pitch_min, -45.0f),
+    AP_GROUPINFO("PITCH_MIN", 4, GA_Guidance, pitch_min, -45.0f),
 
     // @Param: PITCH_MAX
     // @DisplayName: Maximum pitch
@@ -63,78 +47,131 @@ const AP_Param::GroupInfo GA_Guidance::var_info[] = {
     // @Units: deg
     // @Range: 0 45
     // @User: Standard
-    AP_GROUPINFO("PITCH_MAX", 7, GA_Guidance, pitch_max, 10.0f),
+    AP_GROUPINFO("PITCH_MAX", 5, GA_Guidance, pitch_max, 10.0f),
 
     // @Param: KP_ROLL
     // @DisplayName: Roll P gain
     // @Description: Roll proportional gain on bearing error
     // @Range: 0 5
     // @User: Standard
-    AP_GROUPINFO("KP_ROLL", 8, GA_Guidance, kp_roll, 0.8f),
+    AP_GROUPINFO("KP_ROLL", 6, GA_Guidance, kp_roll, 0.8f),
 
     // @Param: KD_ROLL
     // @DisplayName: Roll D gain
     // @Description: Roll damping gain on bearing rate
     // @Range: 0 5
     // @User: Standard
-    AP_GROUPINFO("KD_ROLL", 9, GA_Guidance, kd_roll, 0.3f),
+    AP_GROUPINFO("KD_ROLL", 7, GA_Guidance, kd_roll, 0.3f),
 
     // @Param: PNG_N
     // @DisplayName: PNG gain
     // @Description: Proportional navigation gain on bearing rate
     // @Range: 0 5
     // @User: Standard
-    AP_GROUPINFO("PNG_N", 10, GA_Guidance, png_n, 2.0f),
+    AP_GROUPINFO("PNG_N", 8, GA_Guidance, png_n, 2.0f),
 
     // @Param: KP_PITCH
     // @DisplayName: Pitch P gain
-    // @Description: Pitch proportional gain on elevation error
+    // @Description: Pitch proportional gain on elevation error.
+    //   与滚转通道增益匹配，确保俯仰响应与滚转同等强度。
+    //   Matches roll channel aggressiveness for balanced response.
     // @Range: 0 5
     // @User: Standard
-    AP_GROUPINFO("KP_PITCH", 11, GA_Guidance, kp_pitch, 0.2f),
+    AP_GROUPINFO("KP_PITCH", 9, GA_Guidance, kp_pitch, 1.0f),
+
+    // @Param: KD_PITCH
+    // @DisplayName: Pitch D gain
+    // @Description: Pitch damping gain on elevation rate.
+    //   抑制俯仰通道振荡，防止大增益下的过冲。
+    //   Dampens pitch oscillations, prevents overshoot with high P gain.
+    // @Range: 0 5
+    // @User: Standard
+    AP_GROUPINFO("KD_PITCH", 10, GA_Guidance, kd_pitch, 0.3f),
+
+    // @Param: PTCH_KP
+    // @DisplayName: Flight path angle tracking P gain
+    // @Description: Proportional gain for tracking desired flight path angle
+    //   in the longitudinal guidance channel. Replaces pure LOS elevation mapping.
+    //   航迹角跟踪P增益，用于纵向制导通道替代纯LOS俯仰误差映射。
+    // @Range: 0 5
+    // @User: Standard
+    AP_GROUPINFO("PTCH_KP", 22, GA_Guidance, pitch_track_kp, 1.2f),
+
+    // @Param: PTCH_KD
+    // @DisplayName: Flight path angle tracking D gain
+    // @Description: Damping gain for flight path angle rate in longitudinal guidance.
+    //   航迹角跟踪D增益，用于阻尼航迹角速率。
+    // @Range: 0 5
+    // @User: Standard
+    AP_GROUPINFO("PTCH_KD", 23, GA_Guidance, pitch_track_kd, 0.3f),
+
+    // @Param: FOV_MAR
+    // @DisplayName: FOV keep margin
+    // @Description: Soft boundary for FOV keep controller. When normalized target
+    //   coordinate exceeds this value, guidance pulls target back to image center.
+    //   FOV保持控制器软边界。归一化目标坐标超过此值时，制导律将目标拉回图像中心。
+    // @Range: 0.5 0.99
+    // @User: Standard
+    AP_GROUPINFO("FOV_MAR", 24, GA_Guidance, fov_margin, 0.85f),
+
+    // @Param: FOV_GAIN
+    // @DisplayName: FOV keep gain
+    // @Description: Gain for pulling target back when near FOV edge.
+    //   当目标接近视场边缘时的拉回增益。
+    // @Range: 0 1
+    // @User: Standard
+    AP_GROUPINFO("FOV_GAIN", 25, GA_Guidance, fov_gain, 0.3f),
 
     // @Param: LOSS_ACT
     // @DisplayName: Target loss action
     // @Description: Action when target is lost for longer than GA_TOUT_MS
     // @Values: 0:LevelHold,1:Loiter,2:RTL
     // @User: Standard
-    AP_GROUPINFO("LOSS_ACT", 12, GA_Guidance, loss_action, 0),
+    AP_GROUPINFO("LOSS_ACT", 11, GA_Guidance, loss_action, 0),
 
-    // ===== 新增参数：高精度图像制导优化 =====
+    // ===== 连续增益调度参数（LOS角度驱动，无高度/距离依赖） =====
 
-    // @Param: TGT_ALT
-    // @DisplayName: Target altitude AMSL
-    // @Description: Target altitude above mean sea level. Used with current altitude
-    //   to compute height-above-target for slant range estimation. Set to 0 to use
-    //   home altitude as default (assumes target is on the ground at takeoff point).
-    //   目标海拔高度。与当前高度一起用于计算飞机高于目标的高度差，进而估计斜距。
-    //   设为0时默认使用home海拔（假设目标位于起飞点地面）。
-    // @Units: m
-    // @Range: -100 10000
+    // @Param: ERR_REF
+    // @DisplayName: Gain scheduling reference bearing error
+    // @Description: Reference bearing error angle for gain scheduling.
+    //   When bearing error > this value, gain is maximum (fast alignment).
+    //   When bearing error < this value, gain scales down proportionally.
+    //   增益调度参考方位误差角。误差大于此值时增益最大，小于此值时按比例缩小。
+    // @Units: deg
+    // @Range: 3 60
     // @User: Standard
-    AP_GROUPINFO("TGT_ALT", 13, GA_Guidance, tgt_alt, 0.0f),
+    AP_GROUPINFO("ERR_REF", 12, GA_Guidance, err_ref, 15.0f),
 
-    // @Param: GSC_RNG
-    // @DisplayName: Gain scheduling range
-    // @Description: Reference distance for gain scheduling. When slant range > this
-    //   value, base gains are used. When closer, gains are scaled down to avoid
-    //   terminal oscillation. 增益调度参考距离。斜距大于此值时使用基准增益，
-    //   小于此值时增益按比例缩小，避免末端振荡。
-    // @Units: m
-    // @Range: 20 1000
+    // @Param: RATE_REF
+    // @DisplayName: Gain scheduling reference bearing rate
+    // @Description: Reference bearing rate for gain damping.
+    //   When bearing rate > this value, the target is considered close and
+    //   gain is damped to avoid oscillation. Higher rate ≈ closer target.
+    //   增益调度参考方位角速率。角速率大于此值时认为目标接近，增益衰减。
+    // @Units: deg/s
+    // @Range: 5 100
     // @User: Standard
-    AP_GROUPINFO("GSC_RNG", 14, GA_Guidance, gain_sched_range, 200.0f),
+    AP_GROUPINFO("RATE_REF", 13, GA_Guidance, rate_ref, 30.0f),
 
-    // @Param: TERM_RNG
-    // @DisplayName: Terminal phase range
-    // @Description: Distance threshold for terminal guidance. When range is shorter
-    //   than this, the mode switches to pure pursuit with reduced roll limit to
-    //   prevent overshoot. 终端制导距离阈值。小于此距离时切换为纯追踪，
-    //   限制滚转角以避免过冲。
-    // @Units: m
-    // @Range: 10 300
+    // @Param: TERM_ERR
+    // @DisplayName: Terminal phase bearing error threshold
+    // @Description: When bearing error < this value AND bearing rate < term_rate,
+    //   the mode enters terminal guidance with reduced roll limit.
+    //   终端制导方位误差阈值。误差小于此值且角速率够小时进入终端制导。
+    // @Units: deg
+    // @Range: 1 15
     // @User: Standard
-    AP_GROUPINFO("TERM_RNG", 15, GA_Guidance, terminal_range, 50.0f),
+    AP_GROUPINFO("TERM_ERR", 14, GA_Guidance, term_err, 5.0f),
+
+    // @Param: TERM_RATE
+    // @DisplayName: Terminal phase bearing rate threshold
+    // @Description: When bearing rate < this value AND bearing error < term_err,
+    //   the mode enters terminal guidance with reduced roll limit.
+    //   终端制导方位角速率阈值。角速率小于此值且误差够小时进入终端制导。
+    // @Units: deg/s
+    // @Range: 2 30
+    // @User: Standard
+    AP_GROUPINFO("TERM_RATE", 15, GA_Guidance, term_rate, 10.0f),
 
     // @Param: RUD_MIX
     // @DisplayName: Rudder mixing gain
@@ -175,7 +212,7 @@ const AP_Param::GroupInfo GA_Guidance::var_info[] = {
 
     // @Param: KF_ALPHA
     // @DisplayName: Kalman filter position gain
-    // @Description: Alpha gain of the alpha-beta filter for LOS angles and range.
+    // @Description: Alpha gain of the alpha-beta filter for LOS angles.
     //   Higher = faster response but weaker filtering. Recommended 0.1~0.3.
     //   Alpha-beta滤波器的位置增益。越大响应越快，滤波效果越弱。
     // @Range: 0.01 0.5
@@ -184,7 +221,7 @@ const AP_Param::GroupInfo GA_Guidance::var_info[] = {
 
     // @Param: KF_BETA
     // @DisplayName: Kalman filter velocity gain
-    // @Description: Beta gain of the alpha-beta filter for LOS angles and range.
+    // @Description: Beta gain of the alpha-beta filter for LOS angles.
     //   Higher = more sensitive velocity estimate but noisier. Recommended 0.01~0.05.
     //   Alpha-beta滤波器的速度增益。越大速度估计越灵敏，噪声越大。
     // @Range: 0.001 0.1

@@ -8,30 +8,33 @@
 #include <math.h>
 
 /*
-  FUCHONGCESHI flight mode for precision image-guided collision.
-  精准图像引导碰撞模式。
+  ImgGuide flight mode for image-guided aerial target intercept.
+  图像引导空中目标拦截模式。
 
   ======================== 总体设计说明 ========================
 
   本模式通过云台相机获取目标的像素坐标和云台框架角，由飞控
   计算目标相对于飞机的视线角（LOS），经过Alpha-Beta滤波器
-  平滑和预测后，使用比例导航（PNG）和纯追踪（Pure Pursuit）
-  混合制导律，生成滚转和俯仰指令，控制飞机以最大速度撞击目标。
+  平滑和预测后，使用连续增益调度的比例导航（PNG）制导律，
+  生成滚转和俯仰指令，控制飞机以最大速度穿过空中目标中心。
 
-  制导策略分层：
-    [远距离] 比例导航 + 增益调度（增益大，快速对准）
-    [中距离] 比例导航 + 增益调度（增益适中，稳定跟踪）
-    [近距离] 纯追踪（限制滚转，防止过冲，保证命中）
+  核心原则：纯视觉伺服，不依赖GPS/高度/距离信息。
+  所有控制决策基于LOS角度和角速率。
 
-  关键优化点（8项）：
-    1. 斜距估计：利用高度差+俯视角几何估算，支撑剖面规划
-    2. 增益调度：按斜距动态缩放kp_roll/kp_pitch/png_n
+  连续增益调度策略：
+    gain_scale = err_gain × rate_damp
+    - err_gain: |bearing_error|大 → 增益大（快速对准）
+    - rate_damp: |bearing_rate|大 → 增益小（目标接近，避免振荡）
+    - 两者都小时 → 进入终端制导，限制滚转
+
+  关键特性：
+    1. 纯视觉伺服：像素→LOS→体轴姿态指令，闭环控制
+    2. 连续增益调度：基于LOS误差和角速率，无高度/距离依赖
     3. 目标运动预测：Alpha-Beta滤波器平滑+预测，滤除噪声
-    4. 分段制导：距离<TERM_RNG时切换到纯追踪+限制滚转
-    5. 俯冲角自适应：atan(高度差/水平距离)，替代固定dive_pitch
+    4. 图像去旋转：消除飞机滚转对像素坐标的影响
+    5. 云台杆臂补偿：抵消飞机姿态变化引入的虚假LOS运动
     6. 滚转-偏航耦合补偿：方向舵混合，减小侧滑
-    7. 云台杆臂补偿：抵消飞机姿态变化引入的虚假LOS运动
-    8. 安全保护：目标丢失超时、置信度滤波、遥控器超控
+    7. 安全保护：目标丢失超时、置信度滤波、遥控器超控
 
   ======================== 协议说明 ========================
 
@@ -42,8 +45,8 @@
 
   Frame length: 23 bytes
     header (2)  : 0xFA, 0xAA   帧头
-    cx (4)      : int32 little-endian, 目标x像素坐标(0~640), Camera_x
-    cy (4)      : int32 little-endian, 目标y像素坐标(0~320), Camera_y
+    cx (4)      : int32 little-endian, 目标x像素坐标(以图像中心为原点), Camera_x
+    cy (4)      : int32 little-endian, 目标y像素坐标(以图像中心为原点), Camera_y
     yaw (4)     : int32 little-endian, 云台偏航角, 0.01度, +=右, Gimbal_y
     pitch (4)   : int32 little-endian, 云台俯仰角, 0.01度, +=上, Gimbal_x
     conf (1)    : uint8, 目标置信度, 0~100, Object_confidence
@@ -52,16 +55,15 @@
     tail (2)    : 0xAF, 0x55   帧尾
 
   自动切换：Object_active为非零且非0x11 && Object_confidence>=70% 时，
-  飞控自动从任意模式切换到 FUCHONGCESHI 模式。
+  飞控自动从任意模式切换到 ImgGuide 模式。
 
   ======================== 坐标系说明 ========================
 
-  像素坐标系  : x向右(0→640), y向下(0→480)
+  像素坐标系  : x向右, y向下, 原点在图像中心
   归一化像素  : x∈[-1,1]右正, y∈[-1,1]上正
   机体坐标系  : X向前, Y向右, Z向下
   云台框架角  : 相对机体, 偏航右正, 俯仰上正
   LOS角(体轴) : 云台角 + 像素角 → 目标在机体坐标系下的方位/俯仰
-  LOS角(地轴) : LOS角(体轴) + 飞机姿态角
 */
 
 // ============================================================
@@ -80,7 +82,7 @@ static inline int32_t int32_from_le(const uint8_t *b)
 // 构造函数
 // 初始化所有成员变量为默认值，确保首次进入模式时状态干净
 // ============================================================
-ModeFuchongceshi::ModeFuchongceshi()
+ModeImgGuide::ModeImgGuide()
     : frame_idx(0),
       parse_state(0),
       loss_action_triggered(false),
@@ -96,7 +98,7 @@ ModeFuchongceshi::ModeFuchongceshi()
 // 模式进入函数
 // 初始化串口、重置所有状态、清空滤波器和制导数据
 // ============================================================
-bool ModeFuchongceshi::_enter()
+bool ModeImgGuide::_enter()
 {
     // 初始化串口：根据SERIALn_PROTOCOL=50查找目标云台UART
     // Initialize UART: find the gimbal UART configured with SERIALn_PROTOCOL=50
@@ -125,16 +127,14 @@ bool ModeFuchongceshi::_enter()
     guidance.bearing_rate_rad_s = 0;
     guidance.elevation_error_rad = 0;
     guidance.elevation_rate_rad_s = 0;
-    guidance.slant_range_m = 0;
     guidance.last_update_ms = 0;
     guidance.target_valid = false;
     guidance.in_terminal_phase = false;
 
-    // 重置三个Alpha-Beta滤波器
-    // Reset all three Alpha-Beta filters
+    // 重置两个Alpha-Beta滤波器
+    // Reset both Alpha-Beta filters
     filt_bearing.reset();
     filt_elevation.reset();
-    filt_range.reset();
 
     // 初始化姿态指令为水平
     // Initialize attitude commands to level
@@ -145,23 +145,23 @@ bool ModeFuchongceshi::_enter()
     // Reset controllers to avoid integrator windup when switching from other modes
     reset_controllers();
 
-    plane.gcs().send_text(MAV_SEVERITY_INFO, "FUCHONGCESHI: entered");
+    plane.gcs().send_text(MAV_SEVERITY_INFO, "ImgGuide: entered");
     return true;
 }
 
 // ============================================================
 // 模式退出函数
 // ============================================================
-void ModeFuchongceshi::_exit()
+void ModeImgGuide::_exit()
 {
-    plane.gcs().send_text(MAV_SEVERITY_INFO, "FUCHONGCESHI: exited");
+    plane.gcs().send_text(MAV_SEVERITY_INFO, "ImgGuide: exited");
 }
 
 // ============================================================
 // 初始化云台目标串口
 // 根据SERIALn_PROTOCOL=50查找对应的UART设备并配置波特率
 // ============================================================
-void ModeFuchongceshi::init_uart()
+void ModeImgGuide::init_uart()
 {
     if (uart_initialised) {
         return;  // 已初始化，跳过 Already initialized
@@ -177,9 +177,9 @@ void ModeFuchongceshi::init_uart()
             baud = 115200;
         }
         uart->begin(baud);
-        plane.gcs().send_text(MAV_SEVERITY_INFO, "FUCHONGCESHI: gimbal UART @ %lu baud", (unsigned long)baud);
+        plane.gcs().send_text(MAV_SEVERITY_INFO, "ImgGuide: gimbal UART @ %lu baud", (unsigned long)baud);
     } else {
-        plane.gcs().send_text(MAV_SEVERITY_WARNING, "FUCHONGCESHI: no gimbal UART found");
+        plane.gcs().send_text(MAV_SEVERITY_WARNING, "ImgGuide: no gimbal UART found");
     }
     uart_initialised = true;
 }
@@ -188,7 +188,7 @@ void ModeFuchongceshi::init_uart()
 // 校验接收到的帧数据
 // 验证帧尾是否正确（0xAF 0x55），以及XOR校验和是否匹配
 // ============================================================
-bool ModeFuchongceshi::validate_frame(const uint8_t *frame) const
+bool ModeImgGuide::validate_frame(const uint8_t *frame) const
 {
     // 验证帧尾：最后两个字节必须是 0xAF 0x55
     // Verify tail bytes
@@ -209,12 +209,12 @@ bool ModeFuchongceshi::validate_frame(const uint8_t *frame) const
 // 解析云台发送的图像目标数据帧
 // 将字节流解析为结构化的目标信息（像素坐标、云台角度、置信度等）
 // ============================================================
-bool ModeFuchongceshi::parse_frame(const uint8_t *frame)
+bool ModeImgGuide::parse_frame(const uint8_t *frame)
 {
     // 解析各字段（小端序）
     // Parse all fields (little-endian)
-    const int32_t cx   = int32_from_le(frame + 0);  // 目标x像素坐标 Camera_x, 0..640
-    const int32_t cy   = int32_from_le(frame + 4);  // 目标y像素坐标 Camera_y, 0..320
+    const int32_t cx   = int32_from_le(frame + 0);  // 目标x像素坐标(图像中心为原点) Camera_x
+    const int32_t cy   = int32_from_le(frame + 4);  // 目标y像素坐标(图像中心为原点) Camera_y
     const int32_t gy   = int32_from_le(frame + 8);  // 云台偏航角 Gimbal_y, 0.01度, +右
     const int32_t gp   = int32_from_le(frame + 12); // 云台俯仰角 Gimbal_x, 0.01度, +上
     const uint8_t conf = frame[16];  // 目标置信度 Object_confidence, 0..100
@@ -230,7 +230,7 @@ bool ModeFuchongceshi::parse_frame(const uint8_t *frame)
         const float pitch_deg = degrees(ahrs.get_pitch());
         const float yaw_deg   = degrees(ahrs.get_yaw());
         plane.gcs().send_text(MAV_SEVERITY_INFO,
-                              "FUCHONGCESHI: cx=%d cy=%d gym=%d gpm=%d conf=%d act=0x%02X "
+                              "ImgGuide: cx=%d cy=%d gym=%d gpm=%d conf=%d act=0x%02X "
                               "roll=%.1f pitch=%.1f yaw=%.1f",
                               (int)cx, (int)cy, (int)gy, (int)gp, (int)conf, (int)active,
                               (double)roll_deg, (double)pitch_deg, (double)yaw_deg);
@@ -251,7 +251,7 @@ bool ModeFuchongceshi::parse_frame(const uint8_t *frame)
 // 从串口读取数据并运行帧解析状态机
 // 状态机：0→等待帧头0xFA, 1→等待帧头0xAA, 2→接收帧体21字节
 // ============================================================
-void ModeFuchongceshi::read_serial()
+void ModeImgGuide::read_serial()
 {
     if (uart == nullptr) {
         return;  // 串口未初始化，直接返回 No UART available
@@ -320,11 +320,11 @@ void ModeFuchongceshi::read_serial()
 // 由 Plane::update_control_mode() 每帧调用。
 // 条件：Object_active==0x22 && 置信度>=70%
 // ============================================================
-void ModeFuchongceshi::check_auto_switch()
+void ModeImgGuide::check_auto_switch()
 {
-    // 已在FUCHONGCESHI模式中，无需切换
-    // Already in FUCHONGCESHI mode, no need to switch
-    if (plane.control_mode == &plane.mode_fuchongceshi) {
+    // 已在ImgGuide模式中，无需切换
+    // Already in ImgGuide mode, no need to switch
+    if (plane.control_mode == &plane.mode_img_guide) {
         return;
     }
 
@@ -344,9 +344,9 @@ void ModeFuchongceshi::check_auto_switch()
     // Check if auto-switch conditions are met
     if (should_auto_switch()) {
         plane.gcs().send_text(MAV_SEVERITY_INFO,
-                              "FUCHONGCESHI: auto-switch triggered (conf=%.0f%%, active=0x%02X)",
+                              "ImgGuide: auto-switch triggered (conf=%.0f%%, active=0x%02X)",
                               (double)(target.confidence * 100.0f), target.object_active);
-        plane.set_mode(plane.mode_fuchongceshi, ModeReason::GCS_COMMAND);
+        plane.set_mode(plane.mode_img_guide, ModeReason::GCS_COMMAND);
     }
 }
 
@@ -356,23 +356,48 @@ void ModeFuchongceshi::check_auto_switch()
 // 注意：与should_auto_switch()的区别在于置信度阈值更低(30% vs 70%)，
 // 因为一旦进入模式后，即使置信度下降也应继续追踪。
 // ============================================================
-bool ModeFuchongceshi::target_valid() const
+bool ModeImgGuide::target_valid() const
 {
     // 追踪模式标志必须为非零（AI模块检测到目标）
     // object_active==0x00 表示无目标，==0x11 表示不追踪，其他非零值均视为有效
     // Object_active must be non-zero (AI module detected a target)
     // 0x00=no target, 0x11=detected but not tracking, others=active tracking
     if (target.object_active == 0x00 || target.object_active == 0x11) {
+        static uint32_t last_tv_print_ms = 0;
+        const uint32_t now = AP_HAL::millis();
+        if (now - last_tv_print_ms > 1000) {
+            last_tv_print_ms = now;
+            plane.gcs().send_text(MAV_SEVERITY_WARNING,
+                "ImgGuide: TGT_INVALID active=0x%02X conf=%.0f%%",
+                target.object_active, (double)(target.confidence * 100.0f));
+        }
         return false;
     }
     // 置信度低于最小阈值（30%），认为检测不可靠
     // Confidence too low (< 30%), detection unreliable
     if (target.confidence < CONFIDENCE_MIN_VALID) {
+        static uint32_t last_tv_print_ms = 0;
+        const uint32_t now = AP_HAL::millis();
+        if (now - last_tv_print_ms > 1000) {
+            last_tv_print_ms = now;
+            plane.gcs().send_text(MAV_SEVERITY_WARNING,
+                "ImgGuide: TGT_INVALID low_conf=%.0f%% thresh=%.0f%%",
+                (double)(target.confidence * 100.0f), (double)(CONFIDENCE_MIN_VALID * 100.0f));
+        }
         return false;
     }
     // 数据超时：超过GA_TOUT_MS未收到新数据
     // Data timeout: no new data for longer than GA_TOUT_MS
     if (AP_HAL::millis() - target.last_update_ms > uint32_t(plane.ga_guidance.timeout_ms.get())) {
+        static uint32_t last_tv_print_ms = 0;
+        const uint32_t now = AP_HAL::millis();
+        if (now - last_tv_print_ms > 1000) {
+            last_tv_print_ms = now;
+            const uint32_t elapsed = AP_HAL::millis() - target.last_update_ms;
+            plane.gcs().send_text(MAV_SEVERITY_WARNING,
+                "ImgGuide: TGT_INVALID timeout=%lums limit=%dms",
+                (unsigned long)elapsed, (int)plane.ga_guidance.timeout_ms.get());
+        }
         return false;
     }
     return true;
@@ -383,7 +408,7 @@ bool ModeFuchongceshi::target_valid() const
 // 条件：Object_active==0x22 && 置信度>=70%
 // 在任意飞行模式中，read_serial()持续检查此条件。
 // ============================================================
-bool ModeFuchongceshi::should_auto_switch() const
+bool ModeImgGuide::should_auto_switch() const
 {
     // 追踪模式标志必须为非零且非0x11（AI模块主动请求追踪）
     // object_active==0x00=无目标, 0x11=识别但明确不追踪
@@ -404,7 +429,7 @@ bool ModeFuchongceshi::should_auto_switch() const
 // 目标丢失处理
 // 根据GA_LOSS_ACT执行：0=保持平飞, 1=切Loiter, 2=切RTL
 // ============================================================
-void ModeFuchongceshi::handle_target_loss()
+void ModeImgGuide::handle_target_loss()
 {
     // 目标丢失：平飞姿态
     // Target lost: level flight attitude
@@ -418,7 +443,6 @@ void ModeFuchongceshi::handle_target_loss()
     // Reset filters to avoid using stale estimates when target returns
     filt_bearing.reset();
     filt_elevation.reset();
-    filt_range.reset();
 
     // 目标丢失动作只触发一次，避免反复切换模式
     // Loss action triggers only once to avoid repeated mode switching
@@ -431,132 +455,86 @@ void ModeFuchongceshi::handle_target_loss()
     if (action == 1) {
         // 切换到Loiter定点盘旋
         // Switch to Loiter
-        plane.gcs().send_text(MAV_SEVERITY_WARNING, "FUCHONGCESHI: target lost, switch to Loiter");
+        plane.gcs().send_text(MAV_SEVERITY_WARNING, "ImgGuide: target lost, switch to Loiter");
         plane.set_mode(plane.mode_loiter, ModeReason::GCS_COMMAND);
     } else if (action == 2) {
         // 切换到RTL返航
         // Switch to RTL
-        plane.gcs().send_text(MAV_SEVERITY_WARNING, "FUCHONGCESHI: target lost, switch to RTL");
+        plane.gcs().send_text(MAV_SEVERITY_WARNING, "ImgGuide: target lost, switch to RTL");
         plane.set_mode(plane.mode_rtl, ModeReason::GCS_COMMAND);
+    } else {
+        // action == 0: 保持在ImgGuide模式，平飞等待目标恢复
+        // action == 0: stay in ImgGuide mode, level flight while waiting
+        plane.gcs().send_text(MAV_SEVERITY_INFO,
+            "ImgGuide: target lost, holding level (loss_act=%d)", (int)action);
     }
-    // action == 0: 保持在FUCHONGCESHI模式，平飞等待目标恢复
-    // action == 0: stay in FUCHONGCESHI mode, level flight while waiting
 }
 
 // ============================================================
-// 计算当前飞机高于目标的高度差 (m)
-// 使用当前绝对海拔高度减去目标海拔高度。
-// 如果GA_TGT_ALT未设置(=0)，则默认使用home点海拔（假设目标在地面）。
-// ============================================================
-float ModeFuchongceshi::compute_height_above_target() const
-{
-    // 获取当前绝对海拔高度 (cm)
-    // Get current absolute altitude (cm)
-    int32_t current_alt_cm = 0;
-    if (!plane.current_loc.get_alt_cm(Location::AltFrame::ABSOLUTE, current_alt_cm)) {
-        // 获取失败，退回使用相对高度
-        // Failed to get absolute altitude, fall back to relative altitude
-        return plane.relative_altitude;
-    }
-
-    // 获取目标海拔高度 (m)
-    // Get target altitude (m)
-    float tgt_alt_m = plane.ga_guidance.tgt_alt.get();
-    if (tgt_alt_m <= 0.0f) {
-        // 未设置目标高度，使用home点海拔作为默认值
-        // Target altitude not set, use home altitude as default
-        int32_t home_alt_cm = 0;
-        if (plane.home.get_alt_cm(Location::AltFrame::ABSOLUTE, home_alt_cm)) {
-            tgt_alt_m = home_alt_cm * 0.01f;
-        } else {
-            // 无法获取home高度，假设目标在地面（相对高度=0）
-            // Cannot get home altitude, assume target on ground
-            tgt_alt_m = 0.0f;
-        }
-    }
-
-    // 高度差 = 当前海拔 - 目标海拔 (m)
-    // Height above target = current AMSL - target AMSL (m)
-    const float height_above_target_m = current_alt_cm * 0.01f - tgt_alt_m;
-
-    // 返回原始高度差（允许负值），以便目标高于飞机时生成爬升指令
-    // Return raw signed height, allowing climb command when target is above aircraft
-    return height_above_target_m;
-}
-
-// ============================================================
-// 估计斜距（飞机到目标的直线距离）
-// 利用高度差和地轴俯视角进行几何估算。
+// 计算连续增益缩放系数
+// 基于LOS方位误差和方位角速率，不依赖任何高度/距离信息。
 //
-// 原理：在地轴坐标系中，目标视线与水平面的夹角为俯视角
-//   depression_angle = -los_pitch_earth
-//   slant_range = height_above_target / sin(depression_angle)
+// 连续增益调度公式：
+//   gain_scale = err_gain × rate_damp
 //
-// 当俯视角很小时（几乎水平），sin≈0会导致数值不稳定，
-// 此时使用水平距离代替斜距。
-// ============================================================
-float ModeFuchongceshi::estimate_slant_range(float los_pitch_earth_rad) const
-{
-    // 获取高于目标的高度差
-    // Get height above target
-    const float height_above_target_m = compute_height_above_target();
-
-    // 地轴俯视角：正值=向上看，负值=向下看
-    // Earth-frame pitch: positive = looking up, negative = looking down
-    const float depression_angle_rad = -los_pitch_earth_rad;
-
-    // 飞机低于目标或俯视角过小（< 2度），几何法不可靠，返回保守默认值
-    // Below target or depression angle too small: geometry unreliable, use conservative fallback
-    if (height_above_target_m <= 0.0f || depression_angle_rad < radians(2.0f)) {
-        // 使用较大固定值，避免近距离增益误判
-        // Use large fixed value to avoid close-range gain mis-scheduling
-        return 5000.0f;
-    }
-
-    // 几何估算：斜距 = 高度差 / sin(俯视角)
-    // Geometric estimation: slant_range = height / sin(depression_angle)
-    float slant_range = height_above_target_m / sinf(depression_angle_rad);
-
-    // 限幅：斜距不小于高度差，不大于合理上限（防止数值异常）
-    // Clamp: slant range not less than height, not more than reasonable max
-    slant_range = MAX(slant_range, height_above_target_m);
-    slant_range = MIN(slant_range, 5000.0f);  // 最大5km
-
-    return slant_range;
-}
-
-// ============================================================
-// 计算增益缩放系数
-// 根据斜距动态调整制导增益，实现"远距大增益→近距小增益"的调度。
+// err_gain (误差增益)：
+//   当目标偏离画面中心较远时，需要快速、大幅度的滚转来对准。
+//   err_gain = |bearing_error| / err_ref_rad，限制在 [0.3, 1.0]
+//   误差 > err_ref → 增益=1.0（最大，快速对准）
+//   误差 < err_ref → 增益线性缩小（精细跟踪）
 //
-// 缩放策略：
-//   range >= GSC_RNG  → scale = 1.0  (基准增益)
-//   range <  GSC_RNG  → scale = range / GSC_RNG (线性缩小，最小0.2)
-//   range <  TERM_RNG → scale = 0.0  (纯追踪，无PNG)
+// rate_damp (角速率阻尼)：
+//   当LOS角速率大时，说明目标接近（相对运动快），
+//   需要减小增益避免振荡和过冲。
+//   rate_damp = 1.0 / (1.0 + |bearing_rate| / rate_ref_rad_s)
+//   角速率=0 → rate_damp=1.0（无衰减）
+//   角速率=rate_ref → rate_damp=0.5（减半）
+//   角速率→∞ → rate_damp→0（大幅衰减）
+//
+// 最终增益 = 两者乘积，既保证远距快速对准，又保证近距稳定。
 // ============================================================
-float ModeFuchongceshi::compute_gain_scale(float slant_range_m) const
+float ModeImgGuide::compute_continuous_gain_scale(
+    float bearing_error_rad,
+    float bearing_rate_rad_s) const
 {
-    // 防止参数被设置为0导致除零，最小保护为1m
-    const float gsc_range = MAX(plane.ga_guidance.gain_sched_range.get(), 1.0f);
-    const float term_range = plane.ga_guidance.terminal_range.get();
+    // 获取参数（转换为弧度）
+    // Get parameters (convert to radians)
+    const float err_ref_rad = radians(plane.ga_guidance.err_ref.get());
+    const float rate_ref_rad_s = radians(plane.ga_guidance.rate_ref.get());
 
-    // 终端制导阶段：增益为0（纯追踪，不使用PNG）
-    // Terminal phase: zero gain (pure pursuit, no PNG)
-    if (slant_range_m < term_range) {
-        return 0.0f;
+    // 防止参数为0导致除零，最小保护
+    // Prevent division by zero, minimum protection
+    const float err_ref_safe = MAX(err_ref_rad, radians(1.0f));
+    const float rate_ref_safe = MAX(rate_ref_rad_s, radians(1.0f));
+
+    // 误差增益：误差大→增益大，线性缩放，下限0.3
+    // Error gain: larger error → larger gain, linear scaling, floor 0.3
+    const float error_mag = fabsf(bearing_error_rad);
+    float err_gain = error_mag / err_ref_safe;
+    err_gain = constrain_float(err_gain, 0.3f, 1.0f);
+
+    // 角速率阻尼：角速率大→增益小，防止末端振荡
+    // Rate damping: larger rate → smaller gain, prevent terminal oscillation
+    const float rate_mag = fabsf(bearing_rate_rad_s);
+    const float rate_damp = 1.0f / (1.0f + rate_mag / rate_ref_safe);
+
+    // 合成增益 = 误差增益 × 角速率阻尼
+    // Combined gain = error gain × rate damping
+    const float gain_scale = err_gain * rate_damp;
+
+    // 每隔1秒打印增益调度细节，便于调参
+    // Print gain scheduling details every 1s for tuning
+    static uint32_t last_gs_print_ms = 0;
+    const uint32_t now = AP_HAL::millis();
+    if (now - last_gs_print_ms > 1000) {
+        last_gs_print_ms = now;
+        /*plane.gcs().send_text(MAV_SEVERITY_INFO,
+            "ImgGuide: GAIN err=%.1fdeg rate=%.1fdeg/s err_gain=%.2f rate_damp=%.2f scale=%.2f",
+            (double)degrees(error_mag), (double)degrees(rate_mag),
+            (double)err_gain, (double)rate_damp, (double)gain_scale);*/
     }
 
-    // 距离大于调度参考值：使用基准增益
-    // Range larger than scheduling reference: use base gains
-    if (slant_range_m >= gsc_range) {
-        return 1.0f;
-    }
-
-    // 线性缩放：scale = range / GSC_RNG，下限0.2
-    // Linear scaling: scale = range / GSC_RNG, minimum 0.2
-    float scale = slant_range_m / gsc_range;
-    scale = MAX(scale, 0.2f);  // 避免增益过小导致无法跟踪
-    return scale;
+    return gain_scale;
 }
 
 // ============================================================
@@ -571,7 +549,7 @@ float ModeFuchongceshi::compute_gain_scale(float slant_range_m) const
 // 机体坐标系：X向前，Y向右，Z向下
 // 角速度: p(滚转), q(俯仰), r(偏航)
 // ============================================================
-void ModeFuchongceshi::compute_gimbal_compensation(
+void ModeImgGuide::compute_gimbal_compensation(
     float &comp_bearing_rad_s,
     float &comp_elevation_rad_s) const
 {
@@ -602,204 +580,194 @@ void ModeFuchongceshi::compute_gimbal_compensation(
     const float vx = gyro.y * dz - gyro.z * dy;  // 前向速度分量
     const float vy = gyro.z * dx - gyro.x * dz;  // 右侧速度分量
 
-    // 获取斜距用于将线速度转换为角速度
-    // Get slant range to convert linear velocity to angular rate
-    const float range_m = MAX(guidance.slant_range_m, 10.0f);  // 最小10m防止除零
+    // 获取斜距估计值用于将线速度转换为角速度
+    // 由于空中目标无法获取真实斜距，使用固定默认值
+    // Get slant range estimate for converting linear velocity to angular rate
+    // Since air target range is unknown, use a fixed default value
+    const float range_m_default = 500.0f;  // 默认斜距500m作为近似
 
     // 方位角速率补偿：Y方向（右侧）速度分量引起
     // 注意符号：云台向右移动时，目标在图像中向左运动，补偿应为负
     // Note sign: when gimbal moves right, target appears left in image
-    comp_bearing_rad_s = -vy / range_m;
+    comp_bearing_rad_s = -vy / range_m_default;
 
     // 俯仰角速率补偿：主要是X方向（前向）速度分量引起
     // Elevation rate compensation: mainly from X (forward) velocity component
-    // 注意：向下看时，前向速度产生的角速率符号为负
-    // Note: when looking down, forward velocity produces negative angular rate
-    comp_elevation_rad_s = -vx / range_m;
+    // 注意：当前符号假设相机向前看。如果云台大幅俯仰，符号可能需要调整。
+    // Note: current sign assumes camera looking forward. If gimbal has large pitch, sign may need adjustment.
+    comp_elevation_rad_s = -vx / range_m_default;
 }
 
 // ============================================================
-// 计算终端制导（纯追踪）的滚转和俯仰指令
-// 适用条件：斜距 < GA_TERM_RNG
+// 计算控制指令（混合PNG/TPN + 航迹角跟踪 + FOV保持 + 能量管理）
 //
-// 纯追踪策略：
-//   - 滚转：方位角误差直接映射为滚转指令，增益较小
-//   - 滚转限制在±15°以内，防止末端过冲
-//   - 俯仰：直接对准目标俯角（自适应俯冲角），不做额外修正
-//   - 不使用PNG速率项
+// 横向通道（方位制导）：
+//   远距离/中距离：真比例导航 TPN
+//     a_lat = N * V_c * sigma_dot_bearing
+//     roll_cmd = atan2(a_lat, g)
+//   终端阶段：纯P跟踪，限制±15°
+//
+// 纵向通道（俯仰制导）：
+//   使用期望航迹角跟踪替代纯LOS俯仰误差映射：
+//     gamma_desired = atan2(-alt_error, h_dist)
+//     gamma_current = atan2(-v_down, v_ground)
+//     pitch_cmd = kp * (gamma_desired - gamma_current) - kd * gamma_rate
+//   并叠加LOS俯仰误差前馈，提高响应速度。
+//
+// FOV保持：目标接近视场边缘时主动拉回中心。
+// 能量管理：限制组合负载，禁止同时大滚转+大俯仰导致失速。
 // ============================================================
-void ModeFuchongceshi::compute_terminal_guidance(
-    float filtered_bearing_rad,
-    float filtered_elevation_rad,
-    float filtered_range_m,
-    float &roll_cmd_rad,
-    float &pitch_cmd_rad) const
-{
-    // 终端阶段滚转使用较小的P增益
-    // Terminal phase uses smaller roll P gain
-    const float term_kp_roll = 0.5f;  // 纯追踪滚转增益 pure pursuit roll gain
-
-    // 滚转指令 = 增益 × 方位角误差
-    // Roll command = gain × bearing error
-    roll_cmd_rad = term_kp_roll * filtered_bearing_rad;
-    const float term_roll_lim_rad = radians(TERMINAL_ROLL_LIM_DEG);
-    roll_cmd_rad = constrain_float(roll_cmd_rad, -term_roll_lim_rad, term_roll_lim_rad);
-
-    // 俯仰指令：使用自适应俯冲角，不做额外修正
-    // Pitch command: use adaptive dive pitch, no additional correction
-    // 传入地轴LOS俯仰角（体轴LOS + 飞机俯仰角），确保几何计算正确
-    // Pass earth-frame LOS elevation (body-frame + aircraft pitch)
-    const float los_pitch_earth_rad = filtered_elevation_rad + ahrs.get_pitch();
-    const float adaptive_dive_rad = compute_adaptive_dive_pitch(
-        filtered_range_m, los_pitch_earth_rad);
-
-    pitch_cmd_rad = adaptive_dive_rad;
-}
-
-// ============================================================
-// 计算自适应俯冲角
-// 根据高度差和水平距离动态计算最优俯冲角，替代固定dive_pitch。
-//
-// 参数：
-//   filtered_range_m: 滤波后的斜距 (m)
-//   los_pitch_earth_rad: 地轴LOS俯仰角 (rad)，体轴LOS + 飞机俯仰角
-//                        正值=目标在地平线上方，负值=目标在地平线下方
-//
-// 计算方法：
-//   俯视角 = -los_pitch_earth_rad（地轴，正值=向下看）
-//   水平距离 = 斜距 × cos(俯视角)
-//   自适应俯冲角 = atan2(-高度差, 水平距离)
-//
-// 当水平距离很小时（几乎正上方），使用固定dive_pitch作为后备。
-// ============================================================
-float ModeFuchongceshi::compute_adaptive_dive_pitch(
-    float filtered_range_m,
-    float los_pitch_earth_rad) const
-{
-    // 获取高于目标的高度差
-    // Get height above target
-    const float height_above_target_m = compute_height_above_target();
-
-    // 俯视角（地轴）：正值=向下看，负值=向上看
-    // Depression angle (earth frame): positive = looking down, negative = looking up
-    const float depression_angle_rad = -los_pitch_earth_rad;
-
-    // 水平距离 = 斜距 × cos(俯视角)
-    // Horizontal distance = slant_range × cos(depression_angle)
-    const float horizontal_dist_m = filtered_range_m * cosf(depression_angle_rad);
-
-    // 水平距离过小（< 10m），接近正上方，使用固定俯冲角
-    // Horizontal distance too small, almost directly above, use fixed dive pitch
-    if (horizontal_dist_m < 10.0f) {
-        return radians(plane.ga_guidance.dive_pitch.get());
-    }
-
-    // 自适应俯冲角 = atan2(-高度差, 水平距离)
-    // 结果为负值（向下俯冲）
-    // Adaptive dive pitch = atan2(-height, horizontal_dist)
-    // Result is negative (diving down)
-    float adaptive_dive_rad = atan2f(-height_above_target_m, horizontal_dist_m);
-
-    // 限制在参数设定的俯仰范围内
-    // Clamp to parameter-specified pitch range
-    const float pitch_min_rad = radians(plane.ga_guidance.pitch_min.get());
-    const float pitch_max_rad = radians(plane.ga_guidance.pitch_max.get());
-    adaptive_dive_rad = constrain_float(adaptive_dive_rad, pitch_min_rad, pitch_max_rad);
-
-    return adaptive_dive_rad;
-}
-
-// ============================================================
-// 计算正常制导（比例导航+增益调度）的滚转和俯仰指令
-// 适用条件：斜距 >= GA_TERM_RNG
-//
-// 滚转通道（方位制导）：
-//   roll_cmd = kp_roll * bearing_error   (比例项)
-//            + kd_roll * bearing_rate    (阻尼项)
-//            + png_n  * bearing_rate    (PNG超前项)
-//   所有增益乘以缩放系数
-//
-// 俯仰通道（俯仰制导）：
-//   pitch_cmd = adaptive_dive_pitch  (自适应俯冲基线)
-//             + kp_pitch * elevation_error  (误差修正)
-//   所有增益乘以缩放系数
-// ============================================================
-void ModeFuchongceshi::compute_normal_guidance(
+void ModeImgGuide::compute_guidance_commands(
     float filtered_bearing_rad,
     float filtered_bearing_rate_rad_s,
     float filtered_elevation_rad,
     float filtered_elevation_rate_rad_s,
-    float filtered_range_m,
+    float gain_scale,
+    bool in_terminal,
+    float v_north, float v_east, float v_down,
+    float nx, float ny,
     float &roll_cmd_rad,
     float &pitch_cmd_rad) const
 {
-    // 获取基准增益
-    // Get base gains
-    const float kp_roll  = plane.ga_guidance.kp_roll.get();
-    const float kd_roll  = plane.ga_guidance.kd_roll.get();
-    const float png_n    = plane.ga_guidance.png_n.get();
+    // 通用物理常量
+    const float g = GRAVITY_MSS;
 
-    // 计算增益缩放系数（根据斜距动态调整）
-    // Compute gain scaling factor (dynamic based on slant range)
-    const float gain_scale = compute_gain_scale(filtered_range_m);
+    // 计算地速和接近速度（用于TPN和航迹角）
+    const float v_ground = sqrtf(v_north * v_north + v_east * v_east);
+    const float v_squared = v_ground * v_ground + v_down * v_down;
+    const float v_total = sqrtf(MAX(v_squared, 0.01f));
 
-    // ---- 滚转通道（方位制导） ----
-    // Roll channel (bearing guidance)
-    // 比例项：角度误差越大，滚转越大
-    // Proportional term: larger angle error → larger roll
-    // 阻尼项：抑制滚转振荡
-    // Damping term: suppress roll oscillation
-    // PNG项：比例导航，超前跟踪目标运动（仅使用真实目标角速率）
-    // PNG term: proportional navigation, leads target motion (uses true target rate only)
+    // 当前航迹角：水平面内速度方向与bearing的关系
+    // 这里用 LOS 角速率近似表示横向运动，TPN 直接产生横向加速度命令
+    // Closing velocity 用沿 LOS 的速度分量近似（取负号因为 Vc 是距离缩短率）
+    const float closing_speed = v_total;  // 简化处理：假设速度大致指向目标
 
-    // 从bearing_rate中减去飞机自身偏航角速率，避免飞机自身旋转污染PNG项
-    // 飞机右转时gyro.z>0，目标在画面中左移bearing_rate<0
-    // 关系：true_bearing_rate = bearing_rate + gyro.z
-    // Subtract aircraft yaw rate from bearing_rate to avoid self-rotation
-    // contaminating the PNG term. Aircraft right turn (gyro.z>0) causes target
-    // to move left in image (bearing_rate<0), so true = bearing_rate + gyro.z
-    const float true_bearing_rate = filtered_bearing_rate_rad_s + ahrs.get_gyro().z;
+    if (in_terminal) {
+        // ---- 终端阶段：纯追踪，限制滚转，减半增益 ----
+        // Terminal phase: pure pursuit, limited roll, halved gain
 
-    // 滚转指令（正常PNG制导）
-    // 比例项：方位角误差越大，滚转越大
-    // 阻尼+PNG项：使用补偿后的真实角速率（已减去飞机自身旋转）
-    // Roll command (normal PNG guidance)
-    roll_cmd_rad = gain_scale * (kp_roll * filtered_bearing_rad
-                               + kd_roll * true_bearing_rate
-                               + png_n   * true_bearing_rate);
+        // 滚转指令：纯P，限制±15°
+        // Roll command: pure P, limited to ±15°
+        const float term_kp_roll = 0.5f;
+        roll_cmd_rad = term_kp_roll * filtered_bearing_rad;
+        const float term_roll_lim_rad = radians(TERMINAL_ROLL_LIM_DEG);
+        roll_cmd_rad = constrain_float(roll_cmd_rad, -term_roll_lim_rad, term_roll_lim_rad);
 
-    // ---- 俯仰通道（俯仰制导） ----
-    // Pitch channel (elevation guidance)
-    // 自适应俯冲基线：根据几何关系计算最优俯冲角
-    // Adaptive dive baseline: compute optimal dive angle from geometry
-    // 地轴LOS俯仰角 = 机体LOS俯仰角 + 飞机俯仰角
-    // Earth-frame LOS elevation = body-frame LOS + aircraft pitch
-    const float los_pitch_earth_rad = filtered_elevation_rad + ahrs.get_pitch();
-    const float adaptive_dive_rad = compute_adaptive_dive_pitch(
-        filtered_range_m, los_pitch_earth_rad);
+        // 俯仰指令：纯视觉伺服，减半增益
+        // Pitch command: pure visual servoing, halved gain
+        pitch_cmd_rad = 0.5f * filtered_elevation_rad;
+    } else {
+        // ---- 正常阶段：横向 TPN，纵向航迹角跟踪 ----
+        // Normal phase: lateral TPN, longitudinal flight-path-angle tracking
 
-    // 俯仰指令 = 自适应俯冲基线（几何基准，直接使用）
-    // 不再叠加 filtered_elevation_rad，避免与 adaptive_dive 双重计数导致抬头
-    // Pitch command = adaptive dive baseline only (geometric reference)
-    // No longer adds kp_pitch * filtered_elevation_rad to avoid double-counting
-    pitch_cmd_rad = adaptive_dive_rad;
+        const float kp_roll = plane.ga_guidance.kp_roll.get();
+        const float kd_roll = plane.ga_guidance.kd_roll.get();
+        const float png_n   = plane.ga_guidance.png_n.get();
+        const float kp_pitch_los = plane.ga_guidance.kp_pitch.get();
+        const float kd_pitch_los = plane.ga_guidance.kd_pitch.get();
+        const float ptch_kp = plane.ga_guidance.pitch_track_kp.get();
+        const float ptch_kd = plane.ga_guidance.pitch_track_kd.get();
+
+        // 从bearing_rate中减去飞机自身偏航角速率，避免飞机自身旋转污染PNG项
+        // 飞机右转时gyro.z>0，目标在画面中左移bearing_rate<0
+        // 关系：true_bearing_rate = bearing_rate + gyro.z
+        // Subtract aircraft yaw rate from bearing_rate to avoid self-rotation
+        // contaminating the PNG term. Aircraft right turn (gyro.z>0) causes target
+        // to move left in image (bearing_rate<0), so true = bearing_rate + gyro.z
+        const float true_bearing_rate = filtered_bearing_rate_rad_s + ahrs.get_gyro().z;
+
+        // ---- 横向通道：TPN 产生横向加速度，再映射为滚转角 ----
+        // Lateral channel: TPN generates lateral acceleration, mapped to roll angle
+        // a_lat = N * V_c * sigma_dot, 方向垂直于 LOS，使 LOS 角速率归零
+        // 由于 tailsitter 滚转直接控制横向加速度，用 atan(a_lat / g) 得到滚转命令
+        const float a_lat_cmd = png_n * closing_speed * true_bearing_rate;
+
+        // 保留原始 P+D 项作为方位粗对准，TPN 提供精确跟踪
+        const float roll_p = kp_roll * filtered_bearing_rad;
+        const float roll_d = kd_roll * true_bearing_rate;
+        roll_cmd_rad = gain_scale * (roll_p + roll_d) + atan2f(a_lat_cmd, g);
+
+        // ---- 滚转-俯仰解耦：目标显著高于/低于机头时，优先爬升/俯冲 ----
+        // Roll-pitch decoupling: when target is significantly above/below,
+        // reduce roll to prioritize climb/dive. A heavily rolled aircraft
+        // cannot pitch effectively due to tilted lift vector.
+        const float pitch_priority = constrain_float(
+            fabsf(filtered_elevation_rad) / radians(PITCH_PRIORITY_REF_DEG), 0.0f, 1.0f);
+        // 俯仰优先级越高，滚转衰减越多（最多衰减70%）
+        roll_cmd_rad *= (1.0f - pitch_priority * PITCH_PRIORITY_ROLL_DERATE);
+
+        // ---- 纵向通道：航迹角跟踪 + LOS俯仰误差前馈 ----
+        // Longitudinal channel: flight path angle tracking + LOS elevation feedforward
+        // 通过 GPS 速度计算当前航迹角 gamma_current
+        // gamma 定义：速度矢量与水平面的夹角，向上为正
+        float gamma_current = 0.0f;
+        if (v_ground > 1.0f) {
+            gamma_current = atan2f(-v_down, v_ground);
+        }
+        const float gamma_rate = -filtered_elevation_rate_rad_s;  // 近似航迹角变化率
+
+        // 期望航迹角：从当前位置指向目标的方向
+        // 这里使用体轴LOS俯仰角作为期望航迹角的近似（相机向前看）
+        // 更精确的方案需要知道斜距，但纯视觉模式下不可用
+        const float gamma_desired = filtered_elevation_rad;
+
+        // 航迹角跟踪命令
+        const float pitch_fpa_cmd = ptch_kp * (gamma_desired - gamma_current)
+                                  - ptch_kd * gamma_rate;
+
+        // LOS 俯仰误差前馈：直接对体轴LOS俯仰角响应，提高近距机动性
+        const float pitch_los_cmd = kp_pitch_los * filtered_elevation_rad
+                                  - kd_pitch_los * filtered_elevation_rate_rad_s;
+
+        // 合成俯仰命令：以航迹角跟踪为主，LOS前馈为辅
+        pitch_cmd_rad = gain_scale * pitch_fpa_cmd + 0.3f * pitch_los_cmd;
+    }
+
+    // ---- FOV保持控制器：目标接近视场边缘时主动拉回中心 ----
+    // FOV keep controller: pull target back when near edge
+    const float fov_margin = plane.ga_guidance.fov_margin.get();
+    const float fov_gain = plane.ga_guidance.fov_gain.get();
+    if (fov_margin > 0.0f && fov_gain > 0.0f) {
+        const float margin_abs = fabsf(fov_margin);
+        if (fabsf(nx) > margin_abs) {
+            const float excess = fabsf(nx) - margin_abs;
+            // 目标在右侧(nx>0)时，需要左滚转将其拉回，所以加负号
+            roll_cmd_rad += -copysignf(fov_gain * excess, nx);
+        }
+        if (fabsf(ny) > margin_abs) {
+            const float excess = fabsf(ny) - margin_abs;
+            // 目标在下方(ny>0)时，需要抬头将其拉回，所以加负号
+            pitch_cmd_rad += -copysignf(fov_gain * excess, ny);
+        }
+    }
+
+    // ---- 能量管理：限制组合负载，避免同时大滚转+大俯仰导致失速 ----
+    // Energy management: limit combined load factor
+    const float tan_roll = tanf(fabsf(roll_cmd_rad));
+    const float tan_pitch = tanf(fabsf(pitch_cmd_rad));
+    const float combined_load = sqrtf(tan_roll * tan_roll + tan_pitch * tan_pitch);
+    const float max_load = 1.5f;  // 最大等效过载，可参数化
+    if (combined_load > max_load && combined_load > 0.001f) {
+        const float scale = max_load / combined_load;
+        roll_cmd_rad *= scale;
+        pitch_cmd_rad *= scale;
+    }
 }
 
 // ============================================================
 // 主制导更新函数（核心）
 // 完整流程：
 //   1. 目标有效性检查
-//   2. 像素坐标 → 归一化坐标 → 去旋转 → 角度
-//   3. 云台角 + 像素角 → 机体LOS角
-//   4. 斜距估计（高度差+俯视角几何法）
-//   5. Alpha-Beta滤波器平滑+预测
-//   6. 杆臂补偿修正
-//   7. 分段制导（正常PNG 或 终端纯追踪）
+//   2. 像素坐标 → 归一化坐标 → 去旋转 → FOV角度 → 机体LOS角
+//   3. Alpha-Beta滤波器平滑+预测
+//   4. 杆臂补偿修正
+//   5. 连续增益调度计算
+//   6. 终端阶段判断
+//   7. 控制指令计算
 //   8. 姿态限幅
 //   9. 遥控器超控检查
-//   10. 方向舵耦合补偿
 // ============================================================
-void ModeFuchongceshi::update_guidance()
+void ModeImgGuide::update_guidance()
 {
     const uint32_t now = AP_HAL::millis();
 
@@ -817,22 +785,26 @@ void ModeFuchongceshi::update_guidance()
 
     // ---- 第2步：像素坐标归一化到 [-1, 1] ----
     // Step 2: normalize pixel coordinates to [-1, 1]
-    // x: 0→640 映射到 -1→1（中心为0）
-    // y: 0→320 映射到 1→-1（像素y向下，归一化y向上为正）
+    // 坐标原点在图像中心，nx∈[-1,1]右正, ny∈[-1,1]上正
     const float nx = target.camera_x / (CAMERA_WIDTH_PX * 0.5f);
     const float ny = target.camera_y / (CAMERA_HEIGHT_PX * 0.5f);
 
     // ---- 第3步：图像去旋转（消除飞机滚转对像素坐标的影响） ----
     // Step 3: deskew image rotation due to aircraft roll
-    // 飞机滚转时图像也会旋转，需要将像素坐标旋转回水平参考系
+    // 飞机滚转时图像也会旋转，需要将像素坐标旋转回水平参考系。
+    // 注意：这里要将"图像坐标系"旋转回"水平坐标系"，因此使用逆旋转矩阵。
+    // 当前飞机 roll>0（右翼下沉）时，图像相对水平参考系顺时针旋转，
+    // 需要将图像中的点逆时针旋转 -roll 才能回到水平参考系。
     // When aircraft rolls, the image rotates. Rotate pixels back to level frame.
+    // We rotate the image frame by -roll to get back to the level frame.
     const float roll = ahrs.get_roll();
     const float cr = cosf(roll);  // cos(roll)
     const float sr = sinf(roll);  // sin(roll)
-    // 旋转矩阵： [nx_level] = [cr  -sr] [nx]
-    //            [ny_level]   [sr   cr] [ny]
-    const float nx_level = nx * cr - ny * sr;
-    const float ny_level = nx * sr + ny * cr;
+    // 逆旋转矩阵（图像坐标系 → 水平坐标系）：
+    //  [nx_level] = [ cr   sr] [nx]
+    //  [ny_level]   [-sr   cr] [ny]
+    const float nx_level =  nx * cr + ny * sr;
+    const float ny_level = -nx * sr + ny * cr;
 
     // ---- 第4步：像素偏差 → 角度偏差（利用相机FOV） ----
     // Step 4: pixel error → angle error (using camera FOV)
@@ -858,36 +830,27 @@ void ModeFuchongceshi::update_guidance()
     }
     guidance.last_update_ms = now;
 
-    // ---- 第6步：斜距估计（高度差 + 俯视角几何法） ----
-    // Step 6: slant range estimation (height + depression angle geometry)
-    // 机体LOS角 + 飞机俯仰角 = 地轴LOS俯仰角
-    // Body LOS pitch + aircraft pitch = earth-frame LOS pitch
-    const float los_pitch_earth = los_pitch_body + ahrs.get_pitch();
-    // 利用地轴俯视角和高度差估算斜距
-    // Estimate slant range from earth-frame depression angle and height above target
-    const float raw_slant_range_m = estimate_slant_range(los_pitch_earth);
-
-    // ---- 第7步：Alpha-Beta滤波器平滑和预测 ----
-    // Step 7: Alpha-Beta filter smoothing and prediction
+    // ---- 第6步：Alpha-Beta滤波器平滑和预测 ----
+    // Step 6: Alpha-Beta filter smoothing and prediction
     // 获取滤波器增益参数
     // Get filter gain parameters
     const float kf_alpha = plane.ga_guidance.kf_alpha.get();
     const float kf_beta  = plane.ga_guidance.kf_beta.get();
 
-    // 对方位角误差、俯仰角误差、斜距分别进行滤波
+    // 对方位角误差和俯仰角误差分别进行滤波
     // 方位角和俯仰角是循环角度，启用角度环绕处理
-    // Filter bearing error, elevation error, and slant range independently
+    // Filter bearing error and elevation error independently
     // Bearing and elevation are circular angles, enable wrapping
     const float filtered_bearing   = filt_bearing.update(los_yaw_body, kf_alpha, kf_beta, dt, true);
     const float filtered_elevation = filt_elevation.update(los_pitch_body, kf_alpha, kf_beta, dt, true);
-    const float filtered_range     = filt_range.update(raw_slant_range_m, kf_alpha, kf_beta, dt);
 
-    // 从滤波器获取速度估计值（角速率、距离速率）
-    // Get velocity estimates from filters (angular rates, range rate)
+    // 从滤波器获取速度估计值（角速率）
+    // Get velocity estimates from filters (angular rates)
     // 预测t_go秒后的LOS角（用于前馈补偿目标运动）
     // Predict LOS angles after t_go seconds (feedforward for target motion)
-    const float predicted_bearing   = filt_bearing.predict(T_GO_PREDICT_S);
-    const float predicted_elevation = filt_elevation.predict(T_GO_PREDICT_S);
+    // 角度预测启用环绕处理，避免预测值超出[-π, π]范围
+    const float predicted_bearing   = filt_bearing.predict(T_GO_PREDICT_S, true);
+    const float predicted_elevation = filt_elevation.predict(T_GO_PREDICT_S, true);
     const float filtered_bearing_rate   = filt_bearing.v_est;
     const float filtered_elevation_rate = filt_elevation.v_est;
 
@@ -897,10 +860,9 @@ void ModeFuchongceshi::update_guidance()
     guidance.bearing_rate_rad_s  = filtered_bearing_rate;
     guidance.elevation_error_rad = filtered_elevation;
     guidance.elevation_rate_rad_s = filtered_elevation_rate;
-    guidance.slant_range_m       = filtered_range;
 
-    // ---- 第8步：云台杆臂补偿 ----
-    // Step 8: gimbal lever-arm compensation
+    // ---- 第7步：云台杆臂补偿 ----
+    // Step 7: gimbal lever-arm compensation
     // 计算由飞机姿态角速度+云台偏移引起的虚假LOS角速率
     // Compute spurious LOS angular rates caused by aircraft rotation + gimbal offset
     float comp_bearing_rad_s = 0.0f;
@@ -909,40 +871,61 @@ void ModeFuchongceshi::update_guidance()
 
     // 从滤波后的角速率中减去杆臂补偿值，得到真实的目标LOS角速率
     // Subtract compensation from filtered rates to get true target LOS rates
-    const float true_bearing_rate   = filtered_bearing_rate - comp_bearing_rad_s;
-    const float true_elevation_rate = filtered_elevation_rate - comp_elevation_rad_s;
+    const float true_bearing_rate = filtered_bearing_rate - comp_bearing_rad_s;
 
-    // ---- 第9步：判断终端制导阶段 ----
+    // ---- 第8步：连续增益调度 ----
+    // Step 8: continuous gain scheduling
+    // 基于LOS方位误差和方位角速率计算增益缩放系数
+    // Compute gain scale from LOS bearing error and rate
+    const float gain_scale = compute_continuous_gain_scale(
+        filtered_bearing, true_bearing_rate);
+
+    // ---- 第9步：终端制导阶段判断 ----
     // Step 9: determine terminal guidance phase
-    const float term_range = plane.ga_guidance.terminal_range.get();
-    guidance.in_terminal_phase = (filtered_range < term_range);
+    // 当方位误差和角速率都小于阈值时，认为已接近目标，进入终端制导
+    // Terminal when both bearing error and rate are below thresholds
+    const float term_err_rad = radians(plane.ga_guidance.term_err.get());
+    const float term_rate_rad_s = radians(plane.ga_guidance.term_rate.get());
+    const bool was_terminal = guidance.in_terminal_phase;
+    guidance.in_terminal_phase = (fabsf(filtered_bearing) < term_err_rad)
+                               && (fabsf(true_bearing_rate) < term_rate_rad_s);
 
-    // ---- 第10步：分段制导计算 ----
-    // Step 10: segmented guidance computation
+    // 终端阶段状态变化时打印提示
+    // Print notification when terminal phase state changes
+    if (guidance.in_terminal_phase && !was_terminal) {
+        plane.gcs().send_text(MAV_SEVERITY_INFO,
+            "ImgGuide: ->TERMINAL err=%.1fdeg rate=%.1fdeg/s",
+            (double)degrees(filtered_bearing), (double)degrees(true_bearing_rate));
+    } else if (!guidance.in_terminal_phase && was_terminal) {
+        plane.gcs().send_text(MAV_SEVERITY_INFO,
+            "ImgGuide: ->NORMAL err=%.1fdeg rate=%.1fdeg/s",
+            (double)degrees(filtered_bearing), (double)degrees(true_bearing_rate));
+    }
+
+    // ---- 第10步：计算控制指令 ----
+    // Step 10: compute control commands
     float roll_cmd_rad = 0.0f;
     float pitch_cmd_rad = 0.0f;
 
-    if (guidance.in_terminal_phase) {
-        // 【终端制导】斜距 < GA_TERM_RNG：使用纯追踪
-        // [Terminal guidance] range < GA_TERM_RNG: pure pursuit
-        compute_terminal_guidance(
-            predicted_bearing,   // 使用预测值（含运动补偿）
-            predicted_elevation, // 使用预测值（含运动补偿）
-            filtered_range,      // 使用滤波后的斜距
-            roll_cmd_rad,
-            pitch_cmd_rad);
-    } else {
-        // 【正常制导】斜距 >= GA_TERM_RNG：使用比例导航+增益调度
-        // [Normal guidance] range >= GA_TERM_RNG: PNG + gain scheduling
-        compute_normal_guidance(
-            predicted_bearing,
-            true_bearing_rate,   // 使用杆臂补偿后的真实角速率
-            predicted_elevation,
-            true_elevation_rate, // 使用杆臂补偿后的真实角速率
-            filtered_range,
-            roll_cmd_rad,
-            pitch_cmd_rad);
+    // 获取 NED 速度，用于航迹角跟踪和 TPN 的接近速度计算
+    // Get NED velocity for flight-path-angle tracking and closing velocity
+    Vector3f vel_ned;
+    bool have_vel = ahrs.get_velocity_NED(vel_ned);
+    if (!have_vel) {
+        vel_ned.zero();
     }
+
+    compute_guidance_commands(
+        predicted_bearing,          // 使用预测值（含运动补偿）
+        true_bearing_rate,          // 使用杆臂补偿后的真实角速率
+        predicted_elevation,        // 使用预测值（含运动补偿）
+        filtered_elevation_rate,    // 俯仰角速率（用于阻尼）
+        gain_scale,
+        guidance.in_terminal_phase,
+        vel_ned.x, vel_ned.y, vel_ned.z,  // NED 速度
+        nx_level, ny_level,         // 去旋转后的归一化像素坐标，用于FOV保持
+        roll_cmd_rad,
+        pitch_cmd_rad);
 
     // ---- 第11步：姿态限幅 ----
     // Step 11: attitude limiting
@@ -962,6 +945,14 @@ void ModeFuchongceshi::update_guidance()
     const float roll_stick = plane.channel_roll->norm_input_dz();
     const float pitch_stick = plane.channel_pitch->norm_input_dz();
     if (fabsf(roll_stick) > RC_OVERRIDE_DEADZONE || fabsf(pitch_stick) > RC_OVERRIDE_DEADZONE) {
+        // 遥控器超控时打印提示
+        // Print notification when RC override is active
+        static uint32_t last_rcov_print_ms = 0;
+        if (now - last_rcov_print_ms > 1000) {
+            last_rcov_print_ms = now;
+            plane.gcs().send_text(MAV_SEVERITY_WARNING,
+                "ImgGuide: RC_OVERRIDE roll=%.2f pitch=%.2f", (double)roll_stick, (double)pitch_stick);
+        }
         // 遥控器滚转指令
         // RC roll command
         plane.nav_roll_cd = int32_t(roll_stick * plane.roll_limit_cd);
@@ -985,13 +976,38 @@ void ModeFuchongceshi::update_guidance()
     // Convert to centidegrees format used by ArduPilot control loops
     plane.nav_roll_cd = int32_t(degrees(roll_cmd_rad) * 100.0f);
     plane.nav_pitch_cd = int32_t(degrees(pitch_cmd_rad) * 100.0f);
+
+    // ---- 综合调试打印：每200ms打印一次核心制导变量的中间值 ----
+    // Comprehensive debug print: output key guidance variables every 200ms
+    static uint32_t last_guid_print_ms = 0;
+    if (now - last_guid_print_ms > 200) {
+        last_guid_print_ms = now;
+        // 格式：LOS(原始/滤波/预测) | 增益(误差/速率/合成) | 指令(滚转/俯仰) | 阶段
+        // Format: LOS(raw/filtered/predicted) | gain(err/rate/combined) | cmd(roll/pitch) | phase
+        plane.gcs().send_text(MAV_SEVERITY_INFO,
+            "ImgGuide: LOS_y=%.1f/%.1f/%.1f LOS_p=%.1f/%.1f/%.1f "
+            "gain_scale=%.2f term=%d "
+            "cmd_roll=%.1f cmd_pitch=%.1f "
+            "br=%.1f tbr=%.1f er=%.1f",
+            // LOS_yaw: raw / filtered / predicted (deg)
+            (double)degrees(los_yaw_body), (double)degrees(filtered_bearing), (double)degrees(predicted_bearing),
+            // LOS_pitch: raw / filtered / predicted (deg)
+            (double)degrees(los_pitch_body), (double)degrees(filtered_elevation), (double)degrees(predicted_elevation),
+            // gain_scale, terminal_flag
+            (double)gain_scale, (int)guidance.in_terminal_phase,
+            // roll_cmd, pitch_cmd (deg)
+            (double)degrees(roll_cmd_rad), (double)degrees(pitch_cmd_rad),
+            // bearing_rate, true_bearing_rate, elevation_rate (deg/s)
+            (double)degrees(filtered_bearing_rate), (double)degrees(true_bearing_rate),
+            (double)degrees(filtered_elevation_rate));
+    }
 }
 
 // ============================================================
 // 主更新函数
 // 每帧调用：读取串口数据 → 更新制导
 // ============================================================
-void ModeFuchongceshi::update()
+void ModeImgGuide::update()
 {
     // 读取串口中的云台目标数据帧
     // Read gimbal target data frames from serial
@@ -1008,7 +1024,7 @@ void ModeFuchongceshi::update()
 // 最大油门用于高速撞击。
 // 输出方向舵混合以补偿滚转-偏航耦合。
 // ============================================================
-void ModeFuchongceshi::run()
+void ModeImgGuide::run()
 {
     // 执行固定翼姿态控制器：使用nav_roll_cd和nav_pitch_cd作为目标姿态
     // Run fixed-wing attitude controllers using nav_roll_cd and nav_pitch_cd
@@ -1041,6 +1057,10 @@ void ModeFuchongceshi::run()
         // output_rudder_and_steering 期望归一化输入 [-1, 1]
         const float rudder_output = roll_norm * rudder_mix;
         output_rudder_and_steering(rudder_output);
+    } else {
+        // 方向舵混合关闭时，显式将方向舵归零，避免残留上一模式的值
+        // When rudder mix is off, explicitly zero rudder to avoid residual from previous mode
+        output_rudder_and_steering(0.0f);
     }
 }
 
